@@ -1,0 +1,12 @@
+prefix: "<dark_aqua>[ServerBridge] </dark_aqua>"
+networkPlayerCompletions: true
+joinLeaveAnnouncements:
+  enabled: true
+  suppressLocalMessages: true
+  silentJoinPermission: "serverbridge.silentjoin"
+  silentLeavePermission: "serverbridge.silentleave"
+messages:
+  usagePlayerMessage: "<red>Usage: /<command> <player> <message></red>"
+  usageReplyMessage: "<red>Usage: /<command> <message></red>"
+  usagePlayerTarget: "<red>Usage: /<command> <player></red>"
+  bridgeRequestFailed: "<red>Failed to send bridge request: <reason></red>"

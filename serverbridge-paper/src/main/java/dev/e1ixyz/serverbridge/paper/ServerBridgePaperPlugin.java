@@ -1,10 +1,13 @@
 package dev.e1ixyz.serverbridge.paper;
 
+import com.destroystokyo.paper.event.server.AsyncTabCompleteEvent;
 import dev.e1ixyz.serverbridge.common.protocol.BridgeMessageType;
 import dev.e1ixyz.serverbridge.common.protocol.BridgeProtocol;
 import io.papermc.paper.event.player.AsyncChatEvent;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
+import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
@@ -12,10 +15,15 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
@@ -23,6 +31,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 public final class ServerBridgePaperPlugin extends JavaPlugin implements Listener, PluginMessageListener {
+  private static final MiniMessage MINI = MiniMessage.miniMessage();
+  private static final String DEFAULT_PREFIX = "<dark_aqua>[ServerBridge] </dark_aqua>";
+  private static final String DEFAULT_USAGE_PLAYER_MESSAGE = "<red>Usage: /<command> <player> <message></red>";
+  private static final String DEFAULT_USAGE_REPLY_MESSAGE = "<red>Usage: /<command> <message></red>";
+  private static final String DEFAULT_USAGE_PLAYER_TARGET = "<red>Usage: /<command> <player></red>";
+  private static final String DEFAULT_BRIDGE_REQUEST_FAILED = "<red>Failed to send bridge request: <reason></red>";
+  private static final String DEFAULT_SILENT_JOIN_PERMISSION = "serverbridge.silentjoin";
+  private static final String DEFAULT_SILENT_LEAVE_PERMISSION = "serverbridge.silentleave";
   private static final Set<String> MSG_ALIASES = Set.of(
       "msg", "w", "m", "t", "pm", "emsg", "epm", "tell", "etell", "whisper", "ewhisper"
   );
@@ -39,9 +55,12 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   private static final Set<String> HOMES_ALIASES = Set.of("homes", "ehomes", "listhomes");
 
   private final ConcurrentMap<UUID, String> passthroughOnce = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, NetworkPlayer> networkPlayers = new ConcurrentHashMap<>();
 
   @Override
   public void onEnable() {
+    saveDefaultConfig();
+    reloadConfig();
     getServer().getPluginManager().registerEvents(this, this);
     getServer().getMessenger().registerOutgoingPluginChannel(this, BridgeProtocol.CHANNEL);
     getServer().getMessenger().registerIncomingPluginChannel(this, BridgeProtocol.CHANNEL, this);
@@ -53,6 +72,23 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     getServer().getMessenger().unregisterOutgoingPluginChannel(this);
     getServer().getMessenger().unregisterIncomingPluginChannel(this);
     passthroughOnce.clear();
+    networkPlayers.clear();
+  }
+
+  @EventHandler(priority = EventPriority.HIGHEST)
+  public void onPlayerJoin(PlayerJoinEvent event) {
+    if (shouldSuppressLocalJoinLeaveMessages()) {
+      event.joinMessage(null);
+    }
+    Player player = event.getPlayer();
+    Bukkit.getScheduler().runTask(this, () -> syncPlayerState(player));
+  }
+
+  @EventHandler(priority = EventPriority.HIGHEST)
+  public void onPlayerQuit(PlayerQuitEvent event) {
+    if (shouldSuppressLocalJoinLeaveMessages()) {
+      event.quitMessage(null);
+    }
   }
 
   @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -67,6 +103,26 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
         getLogger().warning("Failed to forward global chat: " + ex.getMessage());
       }
     });
+  }
+
+  @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+  public void onAsyncTabComplete(AsyncTabCompleteEvent event) {
+    if (!networkPlayerCompletionsEnabled() || !event.isCommand() || !(event.getSender() instanceof Player player)) {
+      return;
+    }
+
+    TabCompletionContext context = TabCompletionContext.parse(event.getBuffer());
+    if (context == null || context.argumentIndex() != 0 || !supportsNetworkPlayerCompletion(context.baseCommand())) {
+      return;
+    }
+
+    List<String> completions = buildPlayerCompletions(player, context.baseCommand(), context.currentToken());
+    if (completions.isEmpty()) {
+      return;
+    }
+
+    event.setCompletions(completions);
+    event.setHandled(true);
   }
 
   @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -86,7 +142,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     try {
       if (MSG_ALIASES.contains(invocation.baseCommand())) {
         if (invocation.args().length < 2) {
-          player.sendMessage(error("Usage: /" + invocation.label() + " <player> <message>"));
+          player.sendMessage(localMessage("messages.usagePlayerMessage", DEFAULT_USAGE_PLAYER_MESSAGE, "command", invocation.label()));
           event.setCancelled(true);
           return;
         }
@@ -100,7 +156,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
 
       if (REPLY_ALIASES.contains(invocation.baseCommand())) {
         if (invocation.args().length < 1) {
-          player.sendMessage(error("Usage: /" + invocation.label() + " <message>"));
+          player.sendMessage(localMessage("messages.usageReplyMessage", DEFAULT_USAGE_REPLY_MESSAGE, "command", invocation.label()));
           event.setCancelled(true);
           return;
         }
@@ -166,7 +222,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
         });
       }
     } catch (IOException ex) {
-      player.sendMessage(error("Failed to send bridge request: " + ex.getMessage()));
+      player.sendMessage(localMessage("messages.bridgeRequestFailed", DEFAULT_BRIDGE_REQUEST_FAILED, "reason", ex.getMessage()));
       event.setCancelled(true);
     }
   }
@@ -190,6 +246,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
           UUID targetPlayer = BridgeProtocol.readUuid(decoded.in());
           runTeleport(movingPlayer, targetPlayer, 0);
         }
+        case NETWORK_PLAYER_SNAPSHOT -> updateNetworkPlayers(decoded.in().readInt(), decoded);
         default -> getLogger().warning("Ignoring unsupported backend-bound bridge packet " + decoded.type());
       }
     } catch (Exception ex) {
@@ -199,7 +256,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
 
   private void requireTarget(Player player, PlayerCommandPreprocessEvent event, CommandInvocation invocation, BridgeMessageType type) throws IOException {
     if (invocation.args().length < 1) {
-      player.sendMessage(error("Usage: /" + invocation.label() + " <player>"));
+      player.sendMessage(localMessage("messages.usagePlayerTarget", DEFAULT_USAGE_PLAYER_TARGET, "command", invocation.label()));
       event.setCancelled(true);
       return;
     }
@@ -245,9 +302,136 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     moving.teleport(target);
   }
 
-  private Component error(String message) {
-    return Component.text("[ServerBridge] ", NamedTextColor.DARK_AQUA)
-        .append(Component.text(message, NamedTextColor.RED));
+  private void syncPlayerState(Player player) {
+    if (player == null || !player.isOnline()) {
+      return;
+    }
+    try {
+      send(player, BridgeMessageType.PLAYER_STATE_SYNC, out -> {
+        out.writeBoolean(joinLeaveAnnouncementsEnabled());
+        out.writeBoolean(hasSilentJoinPermission(player));
+        out.writeBoolean(hasSilentLeavePermission(player));
+      });
+    } catch (IOException ex) {
+      getLogger().warning("Failed to sync player state for " + player.getName() + ": " + ex.getMessage());
+    }
+  }
+
+  private void updateNetworkPlayers(int count, BridgeProtocol.DecodedMessage decoded) throws IOException {
+    if (count < 0) {
+      throw new IOException("Negative network player snapshot size: " + count);
+    }
+    networkPlayers.clear();
+    for (int index = 0; index < count; index++) {
+      String username = BridgeProtocol.readString(decoded.in());
+      String server = BridgeProtocol.readString(decoded.in());
+      networkPlayers.put(username.toLowerCase(Locale.ROOT), new NetworkPlayer(username, server));
+    }
+  }
+
+  private boolean networkPlayerCompletionsEnabled() {
+    return getConfig().getBoolean("networkPlayerCompletions", true);
+  }
+
+  private boolean joinLeaveAnnouncementsEnabled() {
+    return getConfig().getBoolean("joinLeaveAnnouncements.enabled", true);
+  }
+
+  private boolean hasSilentJoinPermission(Player player) {
+    return player.hasPermission(silentJoinPermission());
+  }
+
+  private boolean hasSilentLeavePermission(Player player) {
+    return player.hasPermission(silentLeavePermission());
+  }
+
+  private boolean shouldSuppressLocalJoinLeaveMessages() {
+    return joinLeaveAnnouncementsEnabled()
+        && getConfig().getBoolean("joinLeaveAnnouncements.suppressLocalMessages", true);
+  }
+
+  private String silentJoinPermission() {
+    String permission = getConfig().getString("joinLeaveAnnouncements.silentJoinPermission", DEFAULT_SILENT_JOIN_PERMISSION);
+    return permission == null || permission.isBlank() ? DEFAULT_SILENT_JOIN_PERMISSION : permission;
+  }
+
+  private String silentLeavePermission() {
+    String permission = getConfig().getString("joinLeaveAnnouncements.silentLeavePermission", DEFAULT_SILENT_LEAVE_PERMISSION);
+    return permission == null || permission.isBlank() ? DEFAULT_SILENT_LEAVE_PERMISSION : permission;
+  }
+
+  private boolean supportsNetworkPlayerCompletion(String baseCommand) {
+    return MSG_ALIASES.contains(baseCommand)
+        || TPA_ALIASES.contains(baseCommand)
+        || TPACANCEL_ALIASES.contains(baseCommand)
+        || TPAHERE_ALIASES.contains(baseCommand)
+        || TP_ACCEPT_ALIASES.contains(baseCommand)
+        || TP_DENY_ALIASES.contains(baseCommand)
+        || TP_ALIASES.contains(baseCommand)
+        || TPHERE_ALIASES.contains(baseCommand);
+  }
+
+  private List<String> buildPlayerCompletions(Player sender, String baseCommand, String token) {
+    String loweredToken = token == null ? "" : token.toLowerCase(Locale.ROOT);
+    LinkedHashSet<String> suggestions = new LinkedHashSet<>();
+    if ((TP_ACCEPT_ALIASES.contains(baseCommand) || TP_DENY_ALIASES.contains(baseCommand))
+        && "*".startsWith(loweredToken)) {
+      suggestions.add("*");
+    }
+    for (Player online : Bukkit.getOnlinePlayers()) {
+      addPlayerCompletion(suggestions, sender, online.getName(), loweredToken);
+    }
+    for (NetworkPlayer networkPlayer : networkPlayers.values()) {
+      addPlayerCompletion(suggestions, sender, networkPlayer.username(), loweredToken);
+    }
+
+    List<String> names = new ArrayList<>();
+    for (String suggestion : suggestions) {
+      if (!"*".equals(suggestion)) {
+        names.add(suggestion);
+      }
+    }
+    names.sort(String.CASE_INSENSITIVE_ORDER);
+
+    List<String> ordered = new ArrayList<>();
+    if (suggestions.contains("*")) {
+      ordered.add("*");
+    }
+    ordered.addAll(names);
+    return ordered;
+  }
+
+  private void addPlayerCompletion(Set<String> suggestions, Player sender, String candidate, String loweredToken) {
+    if (candidate == null || candidate.isBlank() || candidate.equalsIgnoreCase(sender.getName())) {
+      return;
+    }
+    if (!loweredToken.isEmpty() && !candidate.toLowerCase(Locale.ROOT).startsWith(loweredToken)) {
+      return;
+    }
+    suggestions.add(candidate);
+  }
+
+  private Component localMessage(String path, String fallback, String... placeholders) {
+    String prefix = getConfig().getString("prefix", DEFAULT_PREFIX);
+    String message = getConfig().getString(path, fallback);
+    return MINI.deserialize((prefix == null ? "" : prefix) + (message == null ? "" : message), placeholders(placeholders));
+  }
+
+  private TagResolver[] placeholders(String... placeholders) {
+    if (placeholders == null || placeholders.length == 0) {
+      return new TagResolver[0];
+    }
+    TagResolver[] resolvers = new TagResolver[placeholders.length / 2];
+    int index = 0;
+    for (int i = 0; i + 1 < placeholders.length; i += 2) {
+      resolvers[index++] = Placeholder.unparsed(placeholders[i], placeholders[i + 1] == null ? "" : placeholders[i + 1]);
+    }
+    if (index == resolvers.length) {
+      return resolvers;
+    }
+    TagResolver[] trimmed = new TagResolver[index];
+    System.arraycopy(resolvers, 0, trimmed, 0, index);
+    return trimmed;
   }
 
   private String firstArg(CommandInvocation invocation) {
@@ -279,6 +463,42 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     return label.toLowerCase(Locale.ROOT);
   }
 
+  private record TabCompletionContext(String baseCommand, int argumentIndex, String currentToken) {
+    private static TabCompletionContext parse(String raw) {
+      if (raw == null || raw.isBlank() || !raw.startsWith("/")) {
+        return null;
+      }
+      String body = raw.substring(1);
+      if (body.isBlank()) {
+        return null;
+      }
+      boolean trailingSpace = body.endsWith(" ");
+      String trimmed = body.trim();
+      if (trimmed.isEmpty()) {
+        return null;
+      }
+      String[] tokens = trimmed.split("\\s+");
+      if (tokens.length == 0) {
+        return null;
+      }
+
+      String baseCommand = tokens[0];
+      int colon = baseCommand.lastIndexOf(':');
+      if (colon >= 0) {
+        baseCommand = baseCommand.substring(colon + 1);
+      }
+
+      int providedArgs = Math.max(0, tokens.length - 1);
+      if (!trailingSpace && providedArgs == 0) {
+        return null;
+      }
+
+      int argumentIndex = trailingSpace ? providedArgs : providedArgs - 1;
+      String currentToken = trailingSpace ? "" : tokens[tokens.length - 1];
+      return new TabCompletionContext(baseCommand.toLowerCase(Locale.ROOT), argumentIndex, currentToken);
+    }
+  }
+
   private record CommandInvocation(String label, String baseCommand, String[] args) {
     private static CommandInvocation parse(String raw) {
       if (raw == null || raw.isBlank() || !raw.startsWith("/")) {
@@ -304,5 +524,8 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       }
       return new CommandInvocation(label, base.toLowerCase(Locale.ROOT), args);
     }
+  }
+
+  private record NetworkPlayer(String username, String server) {
   }
 }

@@ -11,6 +11,8 @@ The current implementation is built around your existing `ServerManager` plugin 
 - Intercepts EssentialsX-style private message commands on Paper and routes them across the whole proxy network.
 - Intercepts EssentialsX-style teleport request and direct teleport commands on Paper and resolves them across servers.
 - Mirrors formatted chat across servers by forwarding the already-rendered Paper/LPC chat component to the proxy, then broadcasting it to players on other servers.
+- Adds proxy-wide player-name tab completion for target-player command arguments such as `/msg`, `/tpa`, `/tpahere`, `/tpaccept`, `/tpdeny`, `/tp`, and `/tphere`.
+- Broadcasts proxy-wide join/leave announcements from the proxy while letting a backend Paper permission decide whether a player should participate.
 - Reads a player's existing EssentialsX homes from each managed backend and exposes them as one network-wide home list.
 - For a home on another server, sends the player to that backend first and then runs the normal EssentialsX `/home <name>` command on that backend.
 - Uses `ServerManager`'s managed server list to find backend working directories and Essentials userdata files.
@@ -191,6 +193,7 @@ That server-qualified form is only a bridge convenience. The actual teleport sti
 Proxy config is written to `plugins/serverbridgeproxy/config.yml`.
 
 ```yaml
+prefix: "<dark_aqua>[ServerBridge] </dark_aqua>"
 globalChat: true
 privateMessages: true
 teleports: true
@@ -200,15 +203,49 @@ teleportRequestTimeoutSeconds: 120
 serverManagerCompatibility:
   enabled: true
   requireEnabledFlag: true
+messages:
+  privateMessagingDisabled: "<red>Private messaging is disabled.</red>"
+  playerNotFound: "<red>Player not found: <target></red>"
+  teleportRequestSent: "<green>Teleport request sent to <target>.</green>"
+  homeSendingToServer: "<green>Sending you to <server> for /home <home>...</green>"
+  joinAnnouncement: "<yellow><user> joined <server></yellow>"
+  leaveAnnouncement: "<yellow><user> left <server></yellow>"
 ```
 
+- `prefix` is prepended to ServerBridge-generated proxy messages. Set it to `""` to disable it.
 - `globalChat`, `privateMessages`, `teleports`, `homes` toggle the network bridge features.
 - `essentialsUserdataPath` is resolved inside each managed backend working directory exposed by `ServerManager`.
 - `teleportRequestTimeoutSeconds` controls network teleport request expiry.
 - `serverManagerCompatibility.enabled` tells the proxy plugin to prefer the explicit ServerManager API.
 - `serverManagerCompatibility.requireEnabledFlag` means the proxy only uses that API when `ServerManager` also has `compatibility.serverBridge.enabled: true`.
+- `messages.*` contains the proxy-side in-game text for PMs, teleport flows, home flows, connection failures, and timeout notices.
 
-The Paper plugin has no runtime config right now. Install it on every backend and leave EssentialsX/LPC configured normally there.
+Paper config is written to `plugins/ServerBridgePaper/config.yml`.
+
+```yaml
+prefix: "<dark_aqua>[ServerBridge] </dark_aqua>"
+networkPlayerCompletions: true
+joinLeaveAnnouncements:
+  enabled: true
+  suppressLocalMessages: true
+  silentJoinPermission: "serverbridge.silentjoin"
+  silentLeavePermission: "serverbridge.silentleave"
+messages:
+  usagePlayerMessage: "<red>Usage: /<command> <player> <message></red>"
+  usageReplyMessage: "<red>Usage: /<command> <message></red>"
+  usagePlayerTarget: "<red>Usage: /<command> <player></red>"
+  bridgeRequestFailed: "<red>Failed to send bridge request: <reason></red>"
+```
+
+- The Paper config covers local backend-side ServerBridge messages such as command usage errors and bridge send failures.
+- `networkPlayerCompletions` enables cross-server player suggestions for target-player command arguments.
+- Proxy-wide join/leave announcements are on by default for everyone when `joinLeaveAnnouncements.enabled` is true.
+- `joinLeaveAnnouncements.silentJoinPermission` and `joinLeaveAnnouncements.silentLeavePermission` are checked on the backend Paper server, not on Velocity.
+- The default silent permission nodes are `serverbridge.silentjoin` and `serverbridge.silentleave`, both declared with `default: false`.
+- `joinLeaveAnnouncements.suppressLocalMessages` suppresses the backend's normal join/quit message so the network-wide announcement flow does not duplicate it.
+- The proxy config covers the cross-network messages players actually receive during PM, teleport, and home flows.
+- The proxy `messages.joinAnnouncement` and `messages.leaveAnnouncement` templates default to vanilla-style yellow text and are not prefixed automatically.
+- Both configs use MiniMessage formatting.
 
 ## What This Does Not Do
 
@@ -275,17 +312,36 @@ The proxy plugin writes:
 Current config fields:
 
 ```yaml
+prefix: "<dark_aqua>[ServerBridge] </dark_aqua>"
 globalChat: true
 privateMessages: true
 teleports: true
 homes: true
 essentialsUserdataPath: "plugins/Essentials/userdata"
 teleportRequestTimeoutSeconds: 120
+serverManagerCompatibility:
+  enabled: true
+  requireEnabledFlag: true
+messages:
+  # full default message set is generated into the file
 ```
+
+The backend plugin writes:
+
+- `plugins/ServerBridgePaper/config.yml`
+
+Its `prefix` and `messages.*` entries control Paper-side usage/error messages before a request reaches the proxy. It also owns:
+
+- `networkPlayerCompletions`
+- `joinLeaveAnnouncements.enabled`
+- `joinLeaveAnnouncements.silentJoinPermission`
+- `joinLeaveAnnouncements.silentLeavePermission`
+- `joinLeaveAnnouncements.suppressLocalMessages`
 
 ## Notes
 
 - Global chat forwards the rendered chat component from the source server, so remote players see the same formatting that LPC produced on the source backend.
+- Target-player command completions on Paper are built from a proxy-fed network player snapshot, so players on other backends appear in suggestions.
+- Proxy join/leave announcements are emitted for everyone by default, except players who currently have the configured backend silent permission for that event.
 - The bridge relies on plugin messaging, so the Paper plugin talks to the proxy through connected players.
 - The bridge is intended for a network where players are typically already on one SMP and may target another SMP that is offline; `ServerManager` is expected to do the actual backend boot and eventual player send.
-# ServerBridge

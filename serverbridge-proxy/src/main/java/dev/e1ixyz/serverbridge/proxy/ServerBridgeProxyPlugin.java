@@ -17,10 +17,11 @@ import com.velocitypowered.api.proxy.server.RegisteredServer;
 import dev.e1ixyz.serverbridge.common.protocol.BridgeMessageType;
 import dev.e1ixyz.serverbridge.common.protocol.BridgeProtocol;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.TextComponent;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
-import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
+import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import org.slf4j.Logger;
 
@@ -30,6 +31,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -46,8 +48,9 @@ import java.util.concurrent.ConcurrentMap;
     authors = {"e1ixyz"}
 )
 public final class ServerBridgeProxyPlugin {
-  private static final Component PREFIX = Component.text("[ServerBridge] ", NamedTextColor.DARK_AQUA);
+  private static final MiniMessage MINI = MiniMessage.miniMessage();
   private static final int FALLBACK_CONNECT_RETRY_ATTEMPTS = 5;
+  private static final Duration NETWORK_PLAYER_SNAPSHOT_DELAY = Duration.ofMillis(250);
 
   private final ProxyServer proxy;
   private final Logger logger;
@@ -56,6 +59,8 @@ public final class ServerBridgeProxyPlugin {
   private final ConcurrentMap<UUID, UUID> lastPrivatePartner = new ConcurrentHashMap<>();
   private final ConcurrentMap<UUID, ConcurrentMap<UUID, TeleportRequest>> requestsByTarget = new ConcurrentHashMap<>();
   private final ConcurrentMap<UUID, PendingServerAction> pendingActions = new ConcurrentHashMap<>();
+  private final ConcurrentMap<UUID, JoinLeaveState> joinLeaveStates = new ConcurrentHashMap<>();
+  private final ConcurrentMap<UUID, String> knownServers = new ConcurrentHashMap<>();
 
   private ProxyConfig config;
   private HomeService homeService;
@@ -88,6 +93,8 @@ public final class ServerBridgeProxyPlugin {
     requestsByTarget.clear();
     pendingActions.clear();
     lastPrivatePartner.clear();
+    joinLeaveStates.clear();
+    knownServers.clear();
   }
 
   @Subscribe
@@ -123,6 +130,13 @@ public final class ServerBridgeProxyPlugin {
         case TPHERE_DIRECT -> handleDirectTeleport(player, BridgeProtocol.readString(decoded.in()), TeleportMode.TP_HERE);
         case HOME -> handleHome(player, BridgeProtocol.readNullableString(decoded.in()));
         case HOMES -> handleHomes(player);
+        case PLAYER_STATE_SYNC -> handlePlayerStateSync(
+            connection,
+            player,
+            decoded.in().readBoolean(),
+            decoded.in().readBoolean(),
+            decoded.in().readBoolean()
+        );
         default -> logger.warn("Ignoring unsupported proxy-bound bridge packet {}", decoded.type());
       }
     } catch (Exception ex) {
@@ -133,6 +147,9 @@ public final class ServerBridgeProxyPlugin {
   @Subscribe
   public void onServerConnected(ServerConnectedEvent event) {
     Player player = event.getPlayer();
+    knownServers.put(player.getUniqueId(), event.getServer().getServerInfo().getName());
+    scheduleNetworkPlayerSnapshot();
+
     PendingServerAction action = pendingActions.get(player.getUniqueId());
     if (action == null) {
       return;
@@ -147,11 +164,31 @@ public final class ServerBridgeProxyPlugin {
 
   @Subscribe
   public void onDisconnect(DisconnectEvent event) {
-    UUID uuid = event.getPlayer().getUniqueId();
+    Player player = event.getPlayer();
+    UUID uuid = player.getUniqueId();
+    String lastKnownServer = knownServers.remove(uuid);
+    if (lastKnownServer == null) {
+      lastKnownServer = currentServerName(player);
+    }
+    JoinLeaveState joinLeaveState = joinLeaveStates.remove(uuid);
+    boolean broadcastLeave = joinLeaveState != null
+        && joinLeaveState.enabled()
+        && !joinLeaveState.silentLeave()
+        && lastKnownServer != null
+        && !lastKnownServer.isBlank();
     pendingActions.remove(uuid);
     lastPrivatePartner.remove(uuid);
     requestsByTarget.remove(uuid);
     requestsByTarget.values().forEach(map -> map.remove(uuid));
+
+    if (broadcastLeave) {
+      ProxyConfig.Messages messages = messagesConfig();
+      broadcast(render(messages.leaveAnnouncement,
+          "user", player.getUsername(),
+          "player", player.getUsername(),
+          "server", lastKnownServer));
+    }
+    scheduleNetworkPlayerSnapshot();
   }
 
   private void handleGlobalChat(ServerConnection sourceConnection, Player sender, String componentJson) {
@@ -169,69 +206,83 @@ public final class ServerBridgeProxyPlugin {
     }
   }
 
+  private void handlePlayerStateSync(ServerConnection connection, Player player, boolean joinLeaveEnabled,
+                                     boolean silentJoin, boolean silentLeave) {
+    ProxyConfig.Messages messages = messagesConfig();
+    String serverName = connection.getServerInfo().getName();
+    knownServers.put(player.getUniqueId(), serverName);
+    JoinLeaveState previous = joinLeaveStates.put(
+        player.getUniqueId(),
+        new JoinLeaveState(joinLeaveEnabled, silentJoin, silentLeave)
+    );
+    if (previous == null && joinLeaveEnabled && !silentJoin) {
+      broadcast(render(messages.joinAnnouncement,
+          "user", player.getUsername(),
+          "player", player.getUsername(),
+          "server", serverName));
+    }
+    scheduleNetworkPlayerSnapshot();
+  }
+
   private void handlePrivateMessage(Player sender, String targetName, String message) {
+    ProxyConfig.Messages messages = messagesConfig();
     if (config == null || !config.privateMessages) {
-      message(sender, text("Private messaging is disabled.", NamedTextColor.RED));
+      message(sender, messages.privateMessagingDisabled);
       return;
     }
     Player target = resolveOnlinePlayer(targetName);
     if (target == null) {
-      message(sender, text("Player not found: " + targetName, NamedTextColor.RED));
+      message(sender, messages.playerNotFound, "target", targetName);
       return;
     }
     if (sender.getUniqueId().equals(target.getUniqueId())) {
-      message(sender, text("You cannot message yourself.", NamedTextColor.RED));
+      message(sender, messages.cannotMessageSelf);
       return;
     }
 
-    Component body = Component.text(message, NamedTextColor.WHITE);
-    sender.sendMessage(prefix(Component.text("to ", NamedTextColor.GRAY)
-        .append(Component.text(target.getUsername(), NamedTextColor.LIGHT_PURPLE))
-        .append(Component.text(": ", NamedTextColor.GRAY))
-        .append(body)));
-    target.sendMessage(prefix(Component.text("from ", NamedTextColor.GRAY)
-        .append(Component.text(sender.getUsername(), NamedTextColor.LIGHT_PURPLE))
-        .append(Component.text(": ", NamedTextColor.GRAY))
-        .append(body)));
+    message(sender, messages.privateMessageSent, "target", target.getUsername(), "message", message);
+    message(target, messages.privateMessageReceived, "player", sender.getUsername(), "message", message);
 
     lastPrivatePartner.put(sender.getUniqueId(), target.getUniqueId());
     lastPrivatePartner.put(target.getUniqueId(), sender.getUniqueId());
   }
 
   private void handlePrivateReply(Player sender, String message) {
+    ProxyConfig.Messages messages = messagesConfig();
     UUID targetUuid = lastPrivatePartner.get(sender.getUniqueId());
     if (targetUuid == null) {
-      message(sender, text("Nobody has messaged you recently.", NamedTextColor.RED));
+      message(sender, messages.nobodyMessagedRecently);
       return;
     }
     Player target = proxy.getPlayer(targetUuid).orElse(null);
     if (target == null) {
-      message(sender, text("That player is no longer online.", NamedTextColor.RED));
+      message(sender, messages.privateReplyTargetOffline);
       return;
     }
     handlePrivateMessage(sender, target.getUsername(), message);
   }
 
   private void handleTeleportRequest(Player requester, String targetName, TeleportMode mode) {
+    ProxyConfig.Messages messages = messagesConfig();
     if (config == null || !config.teleports) {
-      message(requester, text("Network teleports are disabled.", NamedTextColor.RED));
+      message(requester, messages.networkTeleportsDisabled);
       return;
     }
 
     Player target = resolveOnlinePlayer(targetName);
     if (target == null) {
-      message(requester, text("Player not found: " + targetName, NamedTextColor.RED));
+      message(requester, messages.playerNotFound, "target", targetName);
       return;
     }
     if (requester.getUniqueId().equals(target.getUniqueId())) {
-      message(requester, text("You cannot target yourself.", NamedTextColor.RED));
+      message(requester, messages.cannotTargetSelf);
       return;
     }
 
     pruneExpiredRequests(target.getUniqueId());
     ConcurrentMap<UUID, TeleportRequest> requests = requestsByTarget.computeIfAbsent(target.getUniqueId(), ignored -> new ConcurrentHashMap<>());
     if (requests.containsKey(requester.getUniqueId())) {
-      message(requester, text("You already have a pending teleport request with " + target.getUsername() + ".", NamedTextColor.RED));
+      message(requester, messages.teleportRequestAlreadyPending, "target", target.getUsername());
       return;
     }
 
@@ -239,20 +290,19 @@ public final class ServerBridgeProxyPlugin {
     requests.put(requester.getUniqueId(), request);
 
     if (mode == TeleportMode.TPA) {
-      message(requester, text("Teleport request sent to " + target.getUsername() + ".", NamedTextColor.GREEN));
-      target.sendMessage(prefix(Component.text(requester.getUsername(), NamedTextColor.LIGHT_PURPLE)
-          .append(Component.text(" wants to teleport to you. Use /tpaccept or /tpdeny.", NamedTextColor.GRAY))));
+      message(requester, messages.teleportRequestSent, "target", target.getUsername());
+      message(target, messages.teleportRequestReceived, "player", requester.getUsername());
       return;
     }
 
-    message(requester, text("Teleport-here request sent to " + target.getUsername() + ".", NamedTextColor.GREEN));
-    target.sendMessage(prefix(Component.text(requester.getUsername(), NamedTextColor.LIGHT_PURPLE)
-        .append(Component.text(" wants you to teleport to them. Use /tpaccept or /tpdeny.", NamedTextColor.GRAY))));
+    message(requester, messages.teleportHereRequestSent, "target", target.getUsername());
+    message(target, messages.teleportHereRequestReceived, "player", requester.getUsername());
   }
 
   private void handleTeleportAllRequest(Player requester) {
+    ProxyConfig.Messages messages = messagesConfig();
     if (config == null || !config.teleports) {
-      message(requester, text("Network teleports are disabled.", NamedTextColor.RED));
+      message(requester, messages.networkTeleportsDisabled);
       return;
     }
 
@@ -268,45 +318,46 @@ public final class ServerBridgeProxyPlugin {
       }
       TeleportRequest request = new TeleportRequest(requester.getUniqueId(), target.getUniqueId(), TeleportMode.TPA_HERE, System.currentTimeMillis());
       requests.put(requester.getUniqueId(), request);
-      target.sendMessage(prefix(Component.text(requester.getUsername(), NamedTextColor.LIGHT_PURPLE)
-          .append(Component.text(" wants you to teleport to them. Use /tpaccept or /tpdeny.", NamedTextColor.GRAY))));
+      message(target, messages.teleportHereRequestReceived, "player", requester.getUsername());
       sent++;
     }
 
     if (sent == 0) {
-      message(requester, text("There are no other online players to request.", NamedTextColor.RED));
+      message(requester, messages.teleportAllNoTargets);
       return;
     }
 
-    message(requester, text("Teleport-here request sent to " + sent + " player(s).", NamedTextColor.GREEN));
+    message(requester, messages.teleportHereRequestSentCount, "count", Integer.toString(sent));
   }
 
   private void handleTeleportCancel(Player requester, String targetName) {
+    ProxyConfig.Messages messages = messagesConfig();
     if (config == null || !config.teleports) {
-      message(requester, text("Network teleports are disabled.", NamedTextColor.RED));
+      message(requester, messages.networkTeleportsDisabled);
       return;
     }
 
     int removed = cancelOutgoingRequests(requester, targetName);
     if (removed <= 0) {
       if (targetName != null && !targetName.isBlank()) {
-        message(requester, text("You do not have a pending request for " + targetName + ".", NamedTextColor.RED));
+        message(requester, messages.noPendingRequestForTarget, "target", targetName);
       } else {
-        message(requester, text("You do not have any outstanding teleport requests.", NamedTextColor.RED));
+        message(requester, messages.noOutstandingTeleportRequests);
       }
       return;
     }
 
     if (targetName != null && !targetName.isBlank()) {
-      message(requester, text("Cancelled teleport request(s) involving " + targetName + ".", NamedTextColor.YELLOW));
+      message(requester, messages.cancelledTeleportWithTarget, "target", targetName);
     } else {
-      message(requester, text("Cancelled " + removed + " outstanding teleport request(s).", NamedTextColor.YELLOW));
+      message(requester, messages.cancelledTeleportCount, "count", Integer.toString(removed));
     }
   }
 
   private void handleTeleportResponse(Player responder, String requesterName, boolean accept) {
+    ProxyConfig.Messages messages = messagesConfig();
     if (config == null || !config.teleports) {
-      message(responder, text("Network teleports are disabled.", NamedTextColor.RED));
+      message(responder, messages.networkTeleportsDisabled);
       return;
     }
 
@@ -317,40 +368,41 @@ public final class ServerBridgeProxyPlugin {
     }
     TeleportRequest request = findRequestForTarget(responder.getUniqueId(), requesterName);
     if (request == null) {
-      message(responder, text("You do not have a matching teleport request.", NamedTextColor.RED));
+      message(responder, messages.noMatchingTeleportRequest);
       return;
     }
 
     Player requester = proxy.getPlayer(request.requester()).orElse(null);
     if (requester == null) {
       removeRequest(request);
-      message(responder, text("That player is no longer online.", NamedTextColor.RED));
+      message(responder, messages.teleportRequesterOffline);
       return;
     }
 
     removeRequest(request);
     if (!accept) {
-      message(responder, text("Denied teleport request from " + requester.getUsername() + ".", NamedTextColor.YELLOW));
-      message(requester, text(responder.getUsername() + " denied your teleport request.", NamedTextColor.RED));
+      message(responder, messages.deniedTeleportRequest, "player", requester.getUsername());
+      message(requester, messages.teleportDeniedNotice, "player", responder.getUsername());
       return;
     }
 
     if (request.mode() == TeleportMode.TPA) {
-      message(responder, text("Accepted teleport request from " + requester.getUsername() + ".", NamedTextColor.GREEN));
-      message(requester, text(responder.getUsername() + " accepted your teleport request.", NamedTextColor.GREEN));
+      message(responder, messages.acceptedTeleportRequest, "player", requester.getUsername());
+      message(requester, messages.teleportAcceptedNotice, "player", responder.getUsername());
       beginTeleportExecution(requester, responder);
       return;
     }
 
-    message(responder, text("Accepted teleport-here request from " + requester.getUsername() + ".", NamedTextColor.GREEN));
-    message(requester, text(responder.getUsername() + " accepted your teleport-here request.", NamedTextColor.GREEN));
+    message(responder, messages.acceptedTeleportHereRequest, "player", requester.getUsername());
+    message(requester, messages.teleportHereAcceptedNotice, "player", responder.getUsername());
     beginTeleportExecution(responder, requester);
   }
 
   private void handleTeleportResponseAll(Player responder, boolean accept) {
+    ProxyConfig.Messages messages = messagesConfig();
     Map<UUID, TeleportRequest> requests = requestsByTarget.get(responder.getUniqueId());
     if (requests == null || requests.isEmpty()) {
-      message(responder, text("You do not have any pending teleport requests.", NamedTextColor.RED));
+      message(responder, messages.noPendingTeleportRequests);
       return;
     }
 
@@ -363,17 +415,17 @@ public final class ServerBridgeProxyPlugin {
         Player requester = proxy.getPlayer(request.requester()).orElse(null);
         removeRequest(request);
         if (requester != null) {
-          message(requester, text(responder.getUsername() + " denied your teleport request.", NamedTextColor.RED));
+          message(requester, messages.teleportDeniedNotice, "player", responder.getUsername());
         }
         denied++;
       }
-      message(responder, text("Denied " + denied + " teleport request(s).", NamedTextColor.YELLOW));
+      message(responder, messages.deniedTeleportCount, "count", Integer.toString(denied));
       return;
     }
 
     long tpHereCount = activeRequests.stream().filter(request -> request.mode() == TeleportMode.TPA_HERE).count();
     if (tpHereCount > 1) {
-      message(responder, text("You have multiple /tpahere requests. Accept them individually to avoid conflicting teleports.", NamedTextColor.RED));
+      message(responder, messages.multipleTeleportHereConflict);
       return;
     }
 
@@ -386,65 +438,67 @@ public final class ServerBridgeProxyPlugin {
       }
 
       if (request.mode() == TeleportMode.TPA) {
-        message(requester, text(responder.getUsername() + " accepted your teleport request.", NamedTextColor.GREEN));
+        message(requester, messages.teleportAcceptedNotice, "player", responder.getUsername());
         accepted++;
         beginTeleportExecution(requester, responder);
         continue;
       }
 
-      message(requester, text(responder.getUsername() + " accepted your teleport-here request.", NamedTextColor.GREEN));
+      message(requester, messages.teleportHereAcceptedNotice, "player", responder.getUsername());
       accepted++;
       beginTeleportExecution(responder, requester);
     }
 
     if (accepted == 0) {
-      message(responder, text("No pending teleport requests were still valid.", NamedTextColor.RED));
+      message(responder, messages.noValidTeleportRequests);
       return;
     }
-    message(responder, text("Accepted " + accepted + " teleport request(s).", NamedTextColor.GREEN));
+    message(responder, messages.acceptedTeleportCount, "count", Integer.toString(accepted));
   }
 
   private void handleDirectTeleport(Player actor, String targetName, TeleportMode mode) {
+    ProxyConfig.Messages messages = messagesConfig();
     if (config == null || !config.teleports) {
-      message(actor, text("Network teleports are disabled.", NamedTextColor.RED));
+      message(actor, messages.networkTeleportsDisabled);
       return;
     }
 
     Player target = resolveOnlinePlayer(targetName);
     if (target == null) {
-      message(actor, text("Player not found: " + targetName, NamedTextColor.RED));
+      message(actor, messages.playerNotFound, "target", targetName);
       return;
     }
     if (actor.getUniqueId().equals(target.getUniqueId())) {
-      message(actor, text("You cannot target yourself.", NamedTextColor.RED));
+      message(actor, messages.cannotTargetSelf);
       return;
     }
 
     if (mode == TeleportMode.TP) {
-      message(actor, text("Teleporting to " + target.getUsername() + "...", NamedTextColor.GREEN));
+      message(actor, messages.directTeleportingTo, "target", target.getUsername());
       beginTeleportExecution(actor, target);
       return;
     }
 
-    message(actor, text("Teleporting " + target.getUsername() + " to you...", NamedTextColor.GREEN));
-    message(target, text("You are being teleported to " + actor.getUsername() + ".", NamedTextColor.GREEN));
+    message(actor, messages.directTeleportingTargetToYou, "target", target.getUsername());
+    message(target, messages.directTeleportBeingMoved, "player", actor.getUsername());
     beginTeleportExecution(target, actor);
   }
 
   private void handleHome(Player player, String requestedHome) {
+    ProxyConfig.Messages messages = messagesConfig();
     if (config == null || !config.homes) {
-      message(player, text("Network homes are disabled.", NamedTextColor.RED));
+      message(player, messages.homesDisabled);
       return;
     }
 
     if (homeService == null) {
-      message(player, text("Home service is not available.", NamedTextColor.RED));
+      message(player, messages.homeServiceUnavailable);
       return;
     }
 
     List<HomeService.HomeEntry> homes = homeService.listHomes(player.getUniqueId(), player.getUsername());
     if (homes.isEmpty()) {
-      message(player, text("No Essentials homes were found across the managed servers.", NamedTextColor.RED));
+      message(player, messages.noHomesFound);
       return;
     }
 
@@ -472,28 +526,30 @@ public final class ServerBridgeProxyPlugin {
 
     switch (lookup.status()) {
       case FOUND -> executeHome(player, lookup.match());
-      case MISSING -> message(player, text("No home named '" + requestedHome + "' was found on the network.", NamedTextColor.RED));
+      case MISSING -> message(player, messages.homeMissing, "home", requestedHome);
       case AMBIGUOUS -> {
-        message(player, text("That home exists on multiple servers. Pick one:", NamedTextColor.YELLOW));
+        message(player, messages.homeAmbiguous);
         sendHomeList(player, lookup.candidates(), false);
       }
     }
   }
 
   private void handleHomes(Player player) {
+    ProxyConfig.Messages messages = messagesConfig();
     if (config == null || !config.homes) {
-      message(player, text("Network homes are disabled.", NamedTextColor.RED));
+      message(player, messages.homesDisabled);
       return;
     }
     List<HomeService.HomeEntry> homes = homeService.listHomes(player.getUniqueId(), player.getUsername());
     if (homes.isEmpty()) {
-      message(player, text("No Essentials homes were found across the managed servers.", NamedTextColor.RED));
+      message(player, messages.noHomesFound);
       return;
     }
     sendHomeList(player, homes, true);
   }
 
   private void executeHome(Player player, HomeService.HomeEntry home) {
+    ProxyConfig.Messages messages = messagesConfig();
     String currentServer = currentServerName(player);
     if (currentServer != null && currentServer.equalsIgnoreCase(home.server())) {
       sendExecutePlayerCommand(player, player, "home " + home.name());
@@ -502,18 +558,19 @@ public final class ServerBridgeProxyPlugin {
 
     RegisteredServer server = proxy.getServer(home.server()).orElse(null);
     if (server == null) {
-      message(player, text("Target server is not registered with Velocity: " + home.server(), NamedTextColor.RED));
+      message(player, messages.targetServerNotRegistered, "server", home.server());
       return;
     }
 
-    message(player, text("Sending you to " + home.server() + " for /home " + home.name() + "...", NamedTextColor.GREEN));
+    message(player, messages.homeSendingToServer, "server", home.server(), "home", home.name());
     startCrossServerAction(player, server, PendingServerAction.command(home.server(), "home " + home.name()));
   }
 
   private void beginTeleportExecution(Player movingPlayer, Player anchorPlayer) {
+    ProxyConfig.Messages messages = messagesConfig();
     String anchorServer = currentServerName(anchorPlayer);
     if (anchorServer == null) {
-      message(movingPlayer, text("Target server is unavailable right now.", NamedTextColor.RED));
+      message(movingPlayer, messages.teleportTargetUnavailable);
       return;
     }
 
@@ -525,7 +582,7 @@ public final class ServerBridgeProxyPlugin {
 
     RegisteredServer targetServer = proxy.getServer(anchorServer).orElse(null);
     if (targetServer == null) {
-      message(movingPlayer, text("Target server is not registered with Velocity: " + anchorServer, NamedTextColor.RED));
+      message(movingPlayer, messages.targetServerNotRegistered, "server", anchorServer);
       return;
     }
 
@@ -534,6 +591,7 @@ public final class ServerBridgeProxyPlugin {
   }
 
   private void sendHomeList(Player player, List<HomeService.HomeEntry> homes, boolean includeHeader) {
+    ProxyConfig.Messages messages = messagesConfig();
     List<HomeService.HomeEntry> sorted = new ArrayList<>(homes);
     String currentServer = currentServerName(player);
     sorted.sort(Comparator.comparing((HomeService.HomeEntry entry) -> {
@@ -545,57 +603,95 @@ public final class ServerBridgeProxyPlugin {
         .thenComparing(HomeService.HomeEntry::name, String.CASE_INSENSITIVE_ORDER));
 
     if (includeHeader) {
-      message(player, text("Network homes:", NamedTextColor.GOLD));
+      message(player, messages.homeListHeader);
     }
 
     for (HomeService.HomeEntry home : sorted) {
-      TextComponent line = Component.text(" - ", NamedTextColor.DARK_GRAY)
-          .append(Component.text(home.name(), NamedTextColor.AQUA))
-          .append(Component.text(" [" + home.server() + "]", NamedTextColor.GRAY))
+      Component line = prefixed(messages.homeListEntry, "home", home.name(), "server", home.server())
           .clickEvent(ClickEvent.runCommand("/home " + home.server() + ":" + home.name()))
-          .hoverEvent(HoverEvent.showText(Component.text("Teleport to this home", NamedTextColor.YELLOW)));
+          .hoverEvent(HoverEvent.showText(render(messages.homeListHover, "home", home.name(), "server", home.server())));
       player.sendMessage(line);
     }
   }
 
   private boolean sendExecutePlayerCommand(Player recipient, Player commandTarget, String command) {
+    ProxyConfig.Messages messages = messagesConfig();
     try {
       byte[] packet = BridgeProtocol.encode(BridgeMessageType.EXECUTE_PLAYER_COMMAND, out -> {
         BridgeProtocol.writeUuid(out, commandTarget.getUniqueId());
         BridgeProtocol.writeString(out, command);
       });
       if (!sendToBackend(recipient, packet)) {
-        message(recipient, text("Failed to dispatch command to the backend.", NamedTextColor.RED));
+        message(recipient, messages.failedDispatchCommand);
         return false;
       }
       return true;
     } catch (IOException ex) {
       logger.error("Failed to encode player command bridge packet", ex);
-      message(recipient, text("Failed to dispatch command to the backend.", NamedTextColor.RED));
+      message(recipient, messages.failedDispatchCommand);
       return false;
     }
   }
 
   private boolean sendTeleportToPlayer(Player recipient, Player movingPlayer, UUID targetUuid) {
+    ProxyConfig.Messages messages = messagesConfig();
     try {
       byte[] packet = BridgeProtocol.encode(BridgeMessageType.TELEPORT_TO_PLAYER, out -> {
         BridgeProtocol.writeUuid(out, movingPlayer.getUniqueId());
         BridgeProtocol.writeUuid(out, targetUuid);
       });
       if (!sendToBackend(recipient, packet)) {
-        message(recipient, text("Failed to dispatch the teleport to the backend.", NamedTextColor.RED));
+        message(recipient, messages.failedDispatchTeleport);
         return false;
       }
       return true;
     } catch (IOException ex) {
       logger.error("Failed to encode teleport bridge packet", ex);
-      message(recipient, text("Failed to dispatch the teleport to the backend.", NamedTextColor.RED));
+      message(recipient, messages.failedDispatchTeleport);
       return false;
     }
   }
 
   private boolean sendToBackend(Player player, byte[] payload) {
     return player.getCurrentServer().map(connection -> connection.sendPluginMessage(channel, payload)).orElse(false);
+  }
+
+  private void scheduleNetworkPlayerSnapshot() {
+    proxy.getScheduler().buildTask(this, this::broadcastNetworkPlayerSnapshot)
+        .delay(NETWORK_PLAYER_SNAPSHOT_DELAY)
+        .schedule();
+  }
+
+  private void broadcastNetworkPlayerSnapshot() {
+    List<NetworkPlayerSnapshotEntry> snapshot = new ArrayList<>();
+    Map<String, Player> representatives = new LinkedHashMap<>();
+    for (Player player : proxy.getAllPlayers()) {
+      String server = currentServerName(player);
+      if (server == null || server.isBlank()) {
+        continue;
+      }
+      snapshot.add(new NetworkPlayerSnapshotEntry(player.getUsername(), server));
+      representatives.putIfAbsent(server, player);
+    }
+    snapshot.sort(Comparator.comparing(NetworkPlayerSnapshotEntry::username, String.CASE_INSENSITIVE_ORDER));
+    for (Player representative : representatives.values()) {
+      sendNetworkPlayerSnapshot(representative, snapshot);
+    }
+  }
+
+  private void sendNetworkPlayerSnapshot(Player representative, List<NetworkPlayerSnapshotEntry> snapshot) {
+    try {
+      byte[] packet = BridgeProtocol.encode(BridgeMessageType.NETWORK_PLAYER_SNAPSHOT, out -> {
+        out.writeInt(snapshot.size());
+        for (NetworkPlayerSnapshotEntry entry : snapshot) {
+          BridgeProtocol.writeString(out, entry.username());
+          BridgeProtocol.writeString(out, entry.server());
+        }
+      });
+      sendToBackend(representative, packet);
+    } catch (IOException ex) {
+      logger.error("Failed to encode network player snapshot bridge packet", ex);
+    }
   }
 
   private void startCrossServerAction(Player player, RegisteredServer targetServer, PendingServerAction action) {
@@ -644,6 +740,7 @@ public final class ServerBridgeProxyPlugin {
   }
 
   private void attemptFallbackConnect(UUID playerUuid, RegisteredServer targetServer, PendingServerAction action, int attempt) {
+    ProxyConfig.Messages messages = messagesConfig();
     Player player = proxy.getPlayer(playerUuid).orElse(null);
     if (player == null) {
       pendingActions.remove(playerUuid, action);
@@ -661,7 +758,7 @@ public final class ServerBridgeProxyPlugin {
           return;
         }
         if (pendingActions.remove(playerUuid, action)) {
-          message(player, text("Failed to connect to " + action.targetServer() + ".", NamedTextColor.RED));
+          message(player, messages.failedConnectToServer, "server", action.targetServer());
         }
         logger.warn("Fallback cross-server connect failed for {} -> {}",
             player.getUsername(), action.targetServer(), error);
@@ -676,10 +773,7 @@ public final class ServerBridgeProxyPlugin {
         return;
       }
       if (pendingActions.remove(playerUuid, action)) {
-        result.getReasonComponent().ifPresentOrElse(
-            player::sendMessage,
-            () -> message(player, text("Failed to connect to " + action.targetServer() + ".", NamedTextColor.RED))
-        );
+        message(player, messages.failedConnectToServer, "server", action.targetServer());
       }
     });
   }
@@ -707,6 +801,7 @@ public final class ServerBridgeProxyPlugin {
   }
 
   private void dispatchAction(UUID playerUuid, PendingServerAction action, int attempt, boolean tracked) {
+    ProxyConfig.Messages messages = messagesConfig();
     Duration delay = attempt == 0 ? Duration.ofMillis(500) : Duration.ofSeconds(1);
     proxy.getScheduler().buildTask(this, () -> {
       if (tracked) {
@@ -732,7 +827,7 @@ public final class ServerBridgeProxyPlugin {
           if (tracked) {
             pendingActions.remove(playerUuid, action);
           }
-          message(player, text("Timed out waiting to finish the cross-server action.", NamedTextColor.RED));
+          message(player, messages.crossServerActionTimedOut);
         }
         return;
       }
@@ -754,7 +849,7 @@ public final class ServerBridgeProxyPlugin {
         if (tracked) {
           pendingActions.remove(playerUuid, action);
         }
-        message(player, text("Timed out waiting to finish the cross-server action.", NamedTextColor.RED));
+        message(player, messages.crossServerActionTimedOut);
       }
     }).delay(delay).schedule();
   }
@@ -862,16 +957,38 @@ public final class ServerBridgeProxyPlugin {
     return null;
   }
 
-  private void message(Player player, Component message) {
-    player.sendMessage(prefix(message));
+  private ProxyConfig.Messages messagesConfig() {
+    return config != null && config.messages != null ? config.messages : new ProxyConfig.Messages();
   }
 
-  private Component prefix(Component message) {
-    return PREFIX.append(message);
+  private void broadcast(Component component) {
+    for (Player player : proxy.getAllPlayers()) {
+      player.sendMessage(component);
+    }
   }
 
-  private Component text(String text, NamedTextColor color) {
-    return Component.text(text, color);
+  private void message(Player player, String template, String... placeholders) {
+    player.sendMessage(prefixed(template, placeholders));
+  }
+
+  private Component prefixed(String template, String... placeholders) {
+    String prefix = config != null && config.prefix != null ? config.prefix : "";
+    return MINI.deserialize(prefix + (template == null ? "" : template), placeholders(placeholders));
+  }
+
+  private Component render(String template, String... placeholders) {
+    return MINI.deserialize(template == null ? "" : template, placeholders(placeholders));
+  }
+
+  private TagResolver[] placeholders(String... placeholders) {
+    if (placeholders == null || placeholders.length == 0) {
+      return new TagResolver[0];
+    }
+    List<TagResolver> resolvers = new ArrayList<>();
+    for (int i = 0; i + 1 < placeholders.length; i += 2) {
+      resolvers.add(Placeholder.unparsed(placeholders[i], placeholders[i + 1] == null ? "" : placeholders[i + 1]));
+    }
+    return resolvers.toArray(TagResolver[]::new);
   }
 
   private record TeleportRequest(UUID requester, UUID target, TeleportMode mode, long createdAt) {
@@ -892,5 +1009,11 @@ public final class ServerBridgeProxyPlugin {
     private static PendingServerAction command(String targetServer, String command) {
       return new PendingServerAction(targetServer, null, Objects.requireNonNull(command, "command"));
     }
+  }
+
+  private record NetworkPlayerSnapshotEntry(String username, String server) {
+  }
+
+  private record JoinLeaveState(boolean enabled, boolean silentJoin, boolean silentLeave) {
   }
 }

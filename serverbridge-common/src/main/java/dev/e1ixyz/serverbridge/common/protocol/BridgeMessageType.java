@@ -17,8 +17,10 @@ public enum BridgeMessageType {
   HOMES(11),
   TPA_ALL(12),
   TP_CANCEL(13),
+  PLAYER_STATE_SYNC(14),
   EXECUTE_PLAYER_COMMAND(101),
-  TELEPORT_TO_PLAYER(102);
+  TELEPORT_TO_PLAYER(102),
+  NETWORK_PLAYER_SNAPSHOT(103);
 
   private static final Map<Integer, BridgeMessageType> BY_ID = new HashMap<>();
 

@@ -6,7 +6,10 @@ dev/e1ixyz/serverbridge/proxy/ServerManagerAccessor.class
 dev/e1ixyz/serverbridge/proxy/HomeService$HomeEntry.class
 dev/e1ixyz/serverbridge/proxy/ServerBridgeProxyPlugin$TeleportMode.class
 dev/e1ixyz/serverbridge/proxy/ServerBridgeProxyPlugin.class
+dev/e1ixyz/serverbridge/proxy/ServerBridgeProxyPlugin$JoinLeaveState.class
+dev/e1ixyz/serverbridge/proxy/ServerBridgeProxyPlugin$NetworkPlayerSnapshotEntry.class
 dev/e1ixyz/serverbridge/proxy/HomeService$HomeLookup.class
 dev/e1ixyz/serverbridge/proxy/ServerBridgeProxyPlugin$1.class
 dev/e1ixyz/serverbridge/proxy/ProxyConfig$ServerManagerCompatibility.class
+dev/e1ixyz/serverbridge/proxy/ProxyConfig$Messages.class
 dev/e1ixyz/serverbridge/proxy/HomeService$LookupStatus.class
