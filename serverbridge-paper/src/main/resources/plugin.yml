@@ -1,0 +1,6 @@
+name: ServerBridgePaper
+version: 0.1.0
+main: dev.e1ixyz.serverbridge.paper.ServerBridgePaperPlugin
+api-version: "1.21"
+authors:
+  - e1ixyz

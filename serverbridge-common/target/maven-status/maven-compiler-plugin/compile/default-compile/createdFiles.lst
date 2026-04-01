@@ -1,0 +1,4 @@
+dev/e1ixyz/serverbridge/common/protocol/BridgeProtocol.class
+dev/e1ixyz/serverbridge/common/protocol/BridgeProtocol$PacketWriter.class
+dev/e1ixyz/serverbridge/common/protocol/BridgeMessageType.class
+dev/e1ixyz/serverbridge/common/protocol/BridgeProtocol$DecodedMessage.class
