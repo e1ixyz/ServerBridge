@@ -47,6 +47,7 @@ import java.util.concurrent.ConcurrentMap;
 )
 public final class ServerBridgeProxyPlugin {
   private static final Component PREFIX = Component.text("[ServerBridge] ", NamedTextColor.DARK_AQUA);
+  private static final int FALLBACK_CONNECT_RETRY_ATTEMPTS = 5;
 
   private final ProxyServer proxy;
   private final Logger logger;
@@ -603,25 +604,7 @@ public final class ServerBridgeProxyPlugin {
     }
     UUID playerUuid = player.getUniqueId();
     pendingActions.put(playerUuid, action);
-    player.createConnectionRequest(targetServer).connect().whenComplete((result, error) -> {
-      if (error != null) {
-        if (pendingActions.remove(playerUuid, action)) {
-          message(player, text("Failed to connect to " + action.targetServer() + ".", NamedTextColor.RED));
-        }
-        logger.warn("Fallback cross-server connect failed for {} -> {}",
-            player.getUsername(), action.targetServer(), error);
-        return;
-      }
-      if (result == null || result.isSuccessful()) {
-        return;
-      }
-      if (pendingActions.remove(playerUuid, action)) {
-        result.getReasonComponent().ifPresentOrElse(
-            player::sendMessage,
-            () -> message(player, text("Failed to connect to " + action.targetServer() + ".", NamedTextColor.RED))
-        );
-      }
-    });
+    attemptFallbackConnect(playerUuid, targetServer, action, 0);
   }
 
   private boolean tryServerManagerCompatibility(Player player, PendingServerAction action) {
@@ -646,15 +629,73 @@ public final class ServerBridgeProxyPlugin {
 
     pendingActions.remove(player.getUniqueId());
     future.whenComplete((success, error) -> {
+      if (proxy.getPlayer(player.getUniqueId()).isEmpty()) {
+        return;
+      }
       if (error != null) {
         logger.warn("ServerManager compatibility handoff failed for {} -> {}",
             player.getUsername(), action.targetServer(), error);
       } else if (!Boolean.TRUE.equals(success)) {
-        logger.warn("ServerManager compatibility handoff did not complete for {} -> {}",
+        logger.info("ServerManager compatibility handoff did not complete for {} -> {}",
             player.getUsername(), action.targetServer());
       }
     });
     return true;
+  }
+
+  private void attemptFallbackConnect(UUID playerUuid, RegisteredServer targetServer, PendingServerAction action, int attempt) {
+    Player player = proxy.getPlayer(playerUuid).orElse(null);
+    if (player == null) {
+      pendingActions.remove(playerUuid, action);
+      return;
+    }
+
+    player.createConnectionRequest(targetServer).connect().whenComplete((result, error) -> {
+      if (proxy.getPlayer(playerUuid).isEmpty()) {
+        pendingActions.remove(playerUuid, action);
+        return;
+      }
+      if (error != null) {
+        if (attempt < FALLBACK_CONNECT_RETRY_ATTEMPTS) {
+          retryFallbackConnect(playerUuid, action, attempt + 1);
+          return;
+        }
+        if (pendingActions.remove(playerUuid, action)) {
+          message(player, text("Failed to connect to " + action.targetServer() + ".", NamedTextColor.RED));
+        }
+        logger.warn("Fallback cross-server connect failed for {} -> {}",
+            player.getUsername(), action.targetServer(), error);
+        return;
+      }
+      if (result == null || result.isSuccessful()) {
+        return;
+      }
+      if (result.getStatus() == com.velocitypowered.api.proxy.ConnectionRequestBuilder.Status.SERVER_DISCONNECTED
+          && attempt < FALLBACK_CONNECT_RETRY_ATTEMPTS) {
+        retryFallbackConnect(playerUuid, action, attempt + 1);
+        return;
+      }
+      if (pendingActions.remove(playerUuid, action)) {
+        result.getReasonComponent().ifPresentOrElse(
+            player::sendMessage,
+            () -> message(player, text("Failed to connect to " + action.targetServer() + ".", NamedTextColor.RED))
+        );
+      }
+    });
+  }
+
+  private void retryFallbackConnect(UUID playerUuid, PendingServerAction action, int nextAttempt) {
+    proxy.getScheduler().buildTask(this, () -> {
+      if (pendingActions.get(playerUuid) != action) {
+        return;
+      }
+      RegisteredServer retryTarget = proxy.getServer(action.targetServer()).orElse(null);
+      if (retryTarget == null) {
+        pendingActions.remove(playerUuid, action);
+        return;
+      }
+      attemptFallbackConnect(playerUuid, retryTarget, action, nextAttempt);
+    }).delay(Duration.ofSeconds(2)).schedule();
   }
 
   private void dispatchPendingAction(UUID playerUuid, PendingServerAction action, int attempt) {
