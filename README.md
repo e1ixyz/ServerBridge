@@ -228,8 +228,6 @@ networkPlayerCompletions: true
 joinLeaveAnnouncements:
   enabled: true
   suppressLocalMessages: true
-  silentJoinPermission: "serverbridge.silentjoin"
-  silentLeavePermission: "serverbridge.silentleave"
 messages:
   usagePlayerMessage: "<red>Usage: /<command> <player> <message></red>"
   usageReplyMessage: "<red>Usage: /<command> <message></red>"
@@ -240,8 +238,9 @@ messages:
 - The Paper config covers local backend-side ServerBridge messages such as command usage errors and bridge send failures.
 - `networkPlayerCompletions` enables cross-server player suggestions for target-player command arguments.
 - Proxy-wide join/leave announcements are on by default for everyone when `joinLeaveAnnouncements.enabled` is true.
-- `joinLeaveAnnouncements.silentJoinPermission` and `joinLeaveAnnouncements.silentLeavePermission` are checked on the backend Paper server, not on Velocity.
-- The default silent permission nodes are `serverbridge.silentjoin` and `serverbridge.silentleave`, both declared with `default: false`.
+- Silent join/leave behavior is based directly on EssentialsX backend permissions, not a ServerBridge permission:
+- `essentials.silentjoin` suppresses the player's proxy-wide join message.
+- `essentials.silentquit` suppresses the player's proxy-wide leave message.
 - `joinLeaveAnnouncements.suppressLocalMessages` suppresses the backend's normal join/quit message so the network-wide announcement flow does not duplicate it.
 - The proxy config covers the cross-network messages players actually receive during PM, teleport, and home flows.
 - The proxy `messages.joinAnnouncement` and `messages.leaveAnnouncement` templates default to vanilla-style yellow text and are not prefixed automatically.
@@ -334,8 +333,6 @@ Its `prefix` and `messages.*` entries control Paper-side usage/error messages be
 
 - `networkPlayerCompletions`
 - `joinLeaveAnnouncements.enabled`
-- `joinLeaveAnnouncements.silentJoinPermission`
-- `joinLeaveAnnouncements.silentLeavePermission`
 - `joinLeaveAnnouncements.suppressLocalMessages`
 
 ## Notes

@@ -37,8 +37,8 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   private static final String DEFAULT_USAGE_REPLY_MESSAGE = "<red>Usage: /<command> <message></red>";
   private static final String DEFAULT_USAGE_PLAYER_TARGET = "<red>Usage: /<command> <player></red>";
   private static final String DEFAULT_BRIDGE_REQUEST_FAILED = "<red>Failed to send bridge request: <reason></red>";
-  private static final String DEFAULT_SILENT_JOIN_PERMISSION = "serverbridge.silentjoin";
-  private static final String DEFAULT_SILENT_LEAVE_PERMISSION = "serverbridge.silentleave";
+  private static final String ESSENTIALS_SILENT_JOIN_PERMISSION = "essentials.silentjoin";
+  private static final String ESSENTIALS_SILENT_QUIT_PERMISSION = "essentials.silentquit";
   private static final Set<String> MSG_ALIASES = Set.of(
       "msg", "w", "m", "t", "pm", "emsg", "epm", "tell", "etell", "whisper", "ewhisper"
   );
@@ -338,26 +338,16 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   }
 
   private boolean hasSilentJoinPermission(Player player) {
-    return player.hasPermission(silentJoinPermission());
+    return player.hasPermission(ESSENTIALS_SILENT_JOIN_PERMISSION);
   }
 
   private boolean hasSilentLeavePermission(Player player) {
-    return player.hasPermission(silentLeavePermission());
+    return player.hasPermission(ESSENTIALS_SILENT_QUIT_PERMISSION);
   }
 
   private boolean shouldSuppressLocalJoinLeaveMessages() {
     return joinLeaveAnnouncementsEnabled()
         && getConfig().getBoolean("joinLeaveAnnouncements.suppressLocalMessages", true);
-  }
-
-  private String silentJoinPermission() {
-    String permission = getConfig().getString("joinLeaveAnnouncements.silentJoinPermission", DEFAULT_SILENT_JOIN_PERMISSION);
-    return permission == null || permission.isBlank() ? DEFAULT_SILENT_JOIN_PERMISSION : permission;
-  }
-
-  private String silentLeavePermission() {
-    String permission = getConfig().getString("joinLeaveAnnouncements.silentLeavePermission", DEFAULT_SILENT_LEAVE_PERMISSION);
-    return permission == null || permission.isBlank() ? DEFAULT_SILENT_LEAVE_PERMISSION : permission;
   }
 
   private boolean supportsNetworkPlayerCompletion(String baseCommand) {

@@ -4,10 +4,3 @@ main: dev.e1ixyz.serverbridge.paper.ServerBridgePaperPlugin
 api-version: "1.21"
 authors:
   - e1ixyz
-permissions:
-  serverbridge.silentjoin:
-    description: Suppresses this player's proxy-wide join announcement.
-    default: false
-  serverbridge.silentleave:
-    description: Suppresses this player's proxy-wide leave announcement.
-    default: false
