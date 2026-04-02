@@ -7,4 +7,5 @@ messages:
   usagePlayerMessage: "<red>Usage: /<command> <player> <message></red>"
   usageReplyMessage: "<red>Usage: /<command> <message></red>"
   usagePlayerTarget: "<red>Usage: /<command> <player></red>"
+  usageHomesPage: "<red>Usage: /<command> [page <number>]</red>"
   bridgeRequestFailed: "<red>Failed to send bridge request: <reason></red>"

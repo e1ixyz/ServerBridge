@@ -51,6 +51,7 @@ public final class ServerBridgeProxyPlugin {
   private static final MiniMessage MINI = MiniMessage.miniMessage();
   private static final int FALLBACK_CONNECT_RETRY_ATTEMPTS = 5;
   private static final Duration NETWORK_PLAYER_SNAPSHOT_DELAY = Duration.ofMillis(250);
+  private static final String HOMES_PAGE_KEYWORD = "page";
 
   private final ProxyServer proxy;
   private final Logger logger;
@@ -64,6 +65,7 @@ public final class ServerBridgeProxyPlugin {
 
   private ProxyConfig config;
   private HomeService homeService;
+  private SocialPreferencesStore socialPreferencesStore;
   private ServerManagerAccessor serverManagerAccessor;
 
   @Inject
@@ -78,6 +80,7 @@ public final class ServerBridgeProxyPlugin {
     try {
       Files.createDirectories(dataDir);
       config = ProxyConfig.loadOrCreate(dataDir.resolve("config.yml"), logger);
+      socialPreferencesStore = SocialPreferencesStore.loadOrCreate(dataDir.resolve("social-preferences.yml"), logger);
       serverManagerAccessor = new ServerManagerAccessor(proxy, dataDir, logger);
       homeService = new HomeService(config, serverManagerAccessor, logger);
       proxy.getChannelRegistrar().register(channel);
@@ -129,7 +132,7 @@ public final class ServerBridgeProxyPlugin {
         case TP_DIRECT -> handleDirectTeleport(player, BridgeProtocol.readString(decoded.in()), TeleportMode.TP);
         case TPHERE_DIRECT -> handleDirectTeleport(player, BridgeProtocol.readString(decoded.in()), TeleportMode.TP_HERE);
         case HOME -> handleHome(player, BridgeProtocol.readNullableString(decoded.in()));
-        case HOMES -> handleHomes(player);
+        case HOMES -> handleHomes(player, decoded.in().readInt());
         case PLAYER_STATE_SYNC -> handlePlayerStateSync(
             connection,
             player,
@@ -137,6 +140,8 @@ public final class ServerBridgeProxyPlugin {
             decoded.in().readBoolean(),
             decoded.in().readBoolean()
         );
+        case MSG_TOGGLE -> handleMessageToggle(player, BridgeProtocol.readNullableString(decoded.in()));
+        case IGNORE_PLAYER -> handleIgnore(player, BridgeProtocol.readString(decoded.in()), decoded.in().readBoolean());
         default -> logger.warn("Ignoring unsupported proxy-bound bridge packet {}", decoded.type());
       }
     } catch (Exception ex) {
@@ -237,6 +242,14 @@ public final class ServerBridgeProxyPlugin {
     }
     if (sender.getUniqueId().equals(target.getUniqueId())) {
       message(sender, messages.cannotMessageSelf);
+      return;
+    }
+    if (socialPreferencesStore != null && socialPreferencesStore.areMessagesDisabled(target.getUniqueId())) {
+      message(sender, messages.targetMessagesDisabled, "target", target.getUsername());
+      return;
+    }
+    if (socialPreferencesStore != null && socialPreferencesStore.isIgnoring(target.getUniqueId(), sender.getUniqueId())) {
+      message(sender, messages.targetIgnoringYou, "target", target.getUsername());
       return;
     }
 
@@ -507,7 +520,7 @@ public final class ServerBridgeProxyPlugin {
         executeHome(player, homes.get(0));
         return;
       }
-      sendHomeList(player, homes, true);
+      sendHomeList(player, homes, 1, true, true);
       return;
     }
 
@@ -529,12 +542,12 @@ public final class ServerBridgeProxyPlugin {
       case MISSING -> message(player, messages.homeMissing, "home", requestedHome);
       case AMBIGUOUS -> {
         message(player, messages.homeAmbiguous);
-        sendHomeList(player, lookup.candidates(), false);
+        sendHomeList(player, lookup.candidates(), 1, false, false);
       }
     }
   }
 
-  private void handleHomes(Player player) {
+  private void handleHomes(Player player, int requestedPage) {
     ProxyConfig.Messages messages = messagesConfig();
     if (config == null || !config.homes) {
       message(player, messages.homesDisabled);
@@ -545,7 +558,124 @@ public final class ServerBridgeProxyPlugin {
       message(player, messages.noHomesFound);
       return;
     }
-    sendHomeList(player, homes, true);
+    sendHomeList(player, homes, requestedPage <= 0 ? 1 : requestedPage, true, true);
+  }
+
+  private void handleMessageToggle(Player player, String requestedState) {
+    ProxyConfig.Messages messages = messagesConfig();
+    if (config == null || !config.privateMessages) {
+      message(player, messages.privateMessagingDisabled);
+      return;
+    }
+    if (socialPreferencesStore == null) {
+      message(player, messages.socialSettingsUpdateFailed);
+      return;
+    }
+
+    try {
+      boolean disabled;
+      if (requestedState == null || requestedState.isBlank()) {
+        disabled = socialPreferencesStore.toggleMessagesDisabled(player.getUniqueId());
+      } else if ("on".equalsIgnoreCase(requestedState)) {
+        disabled = socialPreferencesStore.setMessagesDisabled(player.getUniqueId(), false);
+      } else if ("off".equalsIgnoreCase(requestedState)) {
+        disabled = socialPreferencesStore.setMessagesDisabled(player.getUniqueId(), true);
+      } else {
+        message(player, messages.socialSettingsUpdateFailed);
+        return;
+      }
+
+      if (disabled) {
+        message(player, messages.privateMessagesMuted);
+      } else {
+        message(player, messages.privateMessagesEnabled);
+      }
+    } catch (IOException ex) {
+      logger.error("Failed to update message toggle for {}", player.getUsername(), ex);
+      message(player, messages.socialSettingsUpdateFailed);
+    }
+  }
+
+  private void handleIgnore(Player player, String targetName, boolean forceRemove) {
+    ProxyConfig.Messages messages = messagesConfig();
+    if (config == null || !config.privateMessages) {
+      message(player, messages.privateMessagingDisabled);
+      return;
+    }
+    if (socialPreferencesStore == null) {
+      message(player, messages.socialSettingsUpdateFailed);
+      return;
+    }
+
+    if (targetName == null || targetName.isBlank()) {
+      if (forceRemove) {
+        message(player, messages.socialSettingsUpdateFailed);
+        return;
+      }
+      sendIgnoreList(player);
+      return;
+    }
+
+    if (player.getUsername().equalsIgnoreCase(targetName)) {
+      message(player, messages.cannotIgnoreSelf);
+      return;
+    }
+
+    SocialPreferencesStore.IgnoredEntry storedEntry = socialPreferencesStore.resolveIgnoredByName(player.getUniqueId(), targetName);
+    Player target = resolveOnlinePlayer(targetName);
+
+    try {
+      if (forceRemove) {
+        SocialPreferencesStore.IgnoreResult result;
+        if (target != null) {
+          result = socialPreferencesStore.removeIgnore(player.getUniqueId(), target.getUniqueId());
+        } else if (storedEntry != null) {
+          result = socialPreferencesStore.removeIgnore(player.getUniqueId(), storedEntry.uuid());
+        } else {
+          message(player, messages.notIgnoringTarget, "target", targetName);
+          return;
+        }
+
+        if (result.action() == SocialPreferencesStore.IgnoreAction.REMOVED && result.entry() != null) {
+          message(player, messages.ignoreRemoved, "target", result.entry().name());
+        } else {
+          message(player, messages.notIgnoringTarget, "target", targetName);
+        }
+        return;
+      }
+
+      if (target != null && target.getUniqueId().equals(player.getUniqueId())) {
+        message(player, messages.cannotIgnoreSelf);
+        return;
+      }
+
+      if (target != null) {
+        SocialPreferencesStore.IgnoreResult result = socialPreferencesStore.toggleIgnore(
+            player.getUniqueId(),
+            target.getUniqueId(),
+            target.getUsername()
+        );
+        if (result.action() == SocialPreferencesStore.IgnoreAction.ADDED) {
+          message(player, messages.ignoreAdded, "target", target.getUsername());
+        } else {
+          message(player, messages.ignoreRemoved, "target", result.entry() == null ? target.getUsername() : result.entry().name());
+        }
+        return;
+      }
+
+      if (storedEntry != null) {
+        SocialPreferencesStore.IgnoreResult result = socialPreferencesStore.removeIgnore(player.getUniqueId(), storedEntry.uuid());
+        if (result.action() == SocialPreferencesStore.IgnoreAction.REMOVED) {
+          message(player, messages.ignoreRemoved, "target", storedEntry.name());
+          return;
+        }
+      }
+
+      message(player, messages.playerNotFound, "target", targetName);
+    } catch (IOException ex) {
+      logger.error("Failed to update ignore state for {}", player.getUsername(), ex);
+      message(player, messages.socialSettingsUpdateFailed);
+    }
   }
 
   private void executeHome(Player player, HomeService.HomeEntry home) {
@@ -590,7 +720,8 @@ public final class ServerBridgeProxyPlugin {
         PendingServerAction.teleport(anchorServer, anchorPlayer.getUniqueId()));
   }
 
-  private void sendHomeList(Player player, List<HomeService.HomeEntry> homes, boolean includeHeader) {
+  private void sendHomeList(Player player, List<HomeService.HomeEntry> homes, int requestedPage,
+                            boolean includeHeader, boolean paginate) {
     ProxyConfig.Messages messages = messagesConfig();
     List<HomeService.HomeEntry> sorted = new ArrayList<>(homes);
     String currentServer = currentServerName(player);
@@ -602,16 +733,74 @@ public final class ServerBridgeProxyPlugin {
     }).thenComparing(HomeService.HomeEntry::server, String.CASE_INSENSITIVE_ORDER)
         .thenComparing(HomeService.HomeEntry::name, String.CASE_INSENSITIVE_ORDER));
 
-    if (includeHeader) {
-      message(player, messages.homeListHeader);
+    int totalPages = 1;
+    int page = 1;
+    List<HomeService.HomeEntry> visibleHomes = sorted;
+    if (paginate) {
+      int pageSize = config != null && config.homesPerPage > 0 ? config.homesPerPage : 8;
+      totalPages = Math.max(1, (int) Math.ceil(sorted.size() / (double) pageSize));
+      page = Math.max(1, Math.min(requestedPage, totalPages));
+      if (requestedPage != page) {
+        message(player, messages.homeInvalidPage,
+            "page", Integer.toString(requestedPage),
+            "pages", Integer.toString(totalPages));
+      }
+      int fromIndex = (page - 1) * pageSize;
+      int toIndex = Math.min(sorted.size(), fromIndex + pageSize);
+      visibleHomes = sorted.subList(fromIndex, toIndex);
     }
 
-    for (HomeService.HomeEntry home : sorted) {
+    if (includeHeader) {
+      message(player, messages.homeListHeader, "page", Integer.toString(page), "pages", Integer.toString(totalPages));
+    }
+
+    for (HomeService.HomeEntry home : visibleHomes) {
       Component line = prefixed(messages.homeListEntry, "home", home.name(), "server", home.server())
           .clickEvent(ClickEvent.runCommand("/home " + home.server() + ":" + home.name()))
           .hoverEvent(HoverEvent.showText(render(messages.homeListHover, "home", home.name(), "server", home.server())));
       player.sendMessage(line);
     }
+
+    if (paginate && totalPages > 1) {
+      player.sendMessage(buildHomePaginationLine(messages, page, totalPages));
+    }
+  }
+
+  private void sendIgnoreList(Player player) {
+    ProxyConfig.Messages messages = messagesConfig();
+    List<SocialPreferencesStore.IgnoredEntry> ignored = socialPreferencesStore == null
+        ? List.of()
+        : socialPreferencesStore.listIgnored(player.getUniqueId());
+    if (ignored.isEmpty()) {
+      message(player, messages.ignoreListEmpty);
+      return;
+    }
+
+    message(player, messages.ignoreListHeader);
+    for (SocialPreferencesStore.IgnoredEntry entry : ignored) {
+      message(player, messages.ignoreListEntry, "target", entry.name());
+    }
+  }
+
+  private Component buildHomePaginationLine(ProxyConfig.Messages messages, int page, int totalPages) {
+    Component line = prefixed(messages.homePageIndicator,
+        "page", Integer.toString(page),
+        "pages", Integer.toString(totalPages));
+    if (page > 1) {
+      line = line.append(Component.space()).append(render(messages.homePagePrevious,
+              "page", Integer.toString(page - 1),
+              "pages", Integer.toString(totalPages))
+          .clickEvent(ClickEvent.runCommand("/homes " + HOMES_PAGE_KEYWORD + " " + (page - 1)))
+          .hoverEvent(HoverEvent.showText(render(messages.homePagePreviousHover, "page", Integer.toString(page - 1)))));
+    }
+    if (page < totalPages) {
+      line = line.append(Component.space()).append(render(messages.homePageNext,
+              "page", Integer.toString(page + 1),
+              "pages", Integer.toString(totalPages))
+          .clickEvent(ClickEvent.runCommand("/homes " + HOMES_PAGE_KEYWORD + " " + (page + 1)))
+          .hoverEvent(HoverEvent.showText(render(messages.homePageNextHover, "page", Integer.toString(page + 1)))));
+    }
+    return line;
   }
 
   private boolean sendExecutePlayerCommand(Player recipient, Player commandTarget, String command) {

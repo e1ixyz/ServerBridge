@@ -36,9 +36,15 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   private static final String DEFAULT_USAGE_PLAYER_MESSAGE = "<red>Usage: /<command> <player> <message></red>";
   private static final String DEFAULT_USAGE_REPLY_MESSAGE = "<red>Usage: /<command> <message></red>";
   private static final String DEFAULT_USAGE_PLAYER_TARGET = "<red>Usage: /<command> <player></red>";
+  private static final String DEFAULT_USAGE_HOMES_PAGE = "<red>Usage: /<command> [page <number>]</red>";
   private static final String DEFAULT_BRIDGE_REQUEST_FAILED = "<red>Failed to send bridge request: <reason></red>";
   private static final String ESSENTIALS_SILENT_JOIN_PERMISSION = "essentials.silentjoin";
   private static final String ESSENTIALS_SILENT_QUIT_PERMISSION = "essentials.silentquit";
+  private static final Set<String> MSGTOGGLE_ALIASES = Set.of("msgtoggle", "emsgtoggle");
+  private static final Set<String> IGNORE_ALIASES = Set.of("ignore", "eignore");
+  private static final Set<String> UNIGNORE_ALIASES = Set.of(
+      "unignore", "eunignore", "delignore", "edelignore", "remignore", "eremignore", "rmignore", "ermignore"
+  );
   private static final Set<String> MSG_ALIASES = Set.of(
       "msg", "w", "m", "t", "pm", "emsg", "epm", "tell", "etell", "whisper", "ewhisper"
   );
@@ -165,6 +171,46 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
         return;
       }
 
+      if (MSGTOGGLE_ALIASES.contains(invocation.baseCommand())) {
+        if (invocation.args().length > 1) {
+          return;
+        }
+        if (invocation.args().length == 1 && !isOnOff(invocation.args()[0])) {
+          return;
+        }
+        event.setCancelled(true);
+        send(player, BridgeMessageType.MSG_TOGGLE, out -> BridgeProtocol.writeNullableString(out, firstArg(invocation)));
+        return;
+      }
+
+      if (IGNORE_ALIASES.contains(invocation.baseCommand())) {
+        if (invocation.args().length > 1) {
+          player.sendMessage(localMessage("messages.usagePlayerTarget", DEFAULT_USAGE_PLAYER_TARGET, "command", invocation.label()));
+          event.setCancelled(true);
+          return;
+        }
+        event.setCancelled(true);
+        send(player, BridgeMessageType.IGNORE_PLAYER, out -> {
+          BridgeProtocol.writeString(out, firstArg(invocation) == null ? "" : firstArg(invocation));
+          out.writeBoolean(false);
+        });
+        return;
+      }
+
+      if (UNIGNORE_ALIASES.contains(invocation.baseCommand())) {
+        if (invocation.args().length < 1 || invocation.args().length > 1) {
+          player.sendMessage(localMessage("messages.usagePlayerTarget", DEFAULT_USAGE_PLAYER_TARGET, "command", invocation.label()));
+          event.setCancelled(true);
+          return;
+        }
+        event.setCancelled(true);
+        send(player, BridgeMessageType.IGNORE_PLAYER, out -> {
+          BridgeProtocol.writeString(out, invocation.args()[0]);
+          out.writeBoolean(true);
+        });
+        return;
+      }
+
       if (TPA_ALIASES.contains(invocation.baseCommand())) {
         requireTarget(player, event, invocation, BridgeMessageType.TPA_REQUEST);
         return;
@@ -217,9 +263,19 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       }
 
       if (HOMES_ALIASES.contains(invocation.baseCommand())) {
+        if (invocation.args().length >= 1 && !isHomesPageRequest(invocation)) {
+          event.setCancelled(true);
+          send(player, BridgeMessageType.HOME, out -> BridgeProtocol.writeNullableString(out, firstArg(invocation)));
+          return;
+        }
+        int page = parseHomesPage(invocation);
+        if (page < 1) {
+          player.sendMessage(localMessage("messages.usageHomesPage", DEFAULT_USAGE_HOMES_PAGE, "command", invocation.label()));
+          event.setCancelled(true);
+          return;
+        }
         event.setCancelled(true);
-        send(player, BridgeMessageType.HOMES, out -> {
-        });
+        send(player, BridgeMessageType.HOMES, out -> out.writeInt(page));
       }
     } catch (IOException ex) {
       player.sendMessage(localMessage("messages.bridgeRequestFailed", DEFAULT_BRIDGE_REQUEST_FAILED, "reason", ex.getMessage()));
@@ -352,6 +408,8 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
 
   private boolean supportsNetworkPlayerCompletion(String baseCommand) {
     return MSG_ALIASES.contains(baseCommand)
+        || IGNORE_ALIASES.contains(baseCommand)
+        || UNIGNORE_ALIASES.contains(baseCommand)
         || TPA_ALIASES.contains(baseCommand)
         || TPACANCEL_ALIASES.contains(baseCommand)
         || TPAHERE_ALIASES.contains(baseCommand)
@@ -399,6 +457,28 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       return;
     }
     suggestions.add(candidate);
+  }
+
+  private boolean isOnOff(String value) {
+    return "on".equalsIgnoreCase(value) || "off".equalsIgnoreCase(value);
+  }
+
+  private boolean isHomesPageRequest(CommandInvocation invocation) {
+    return invocation.args().length >= 1 && "page".equalsIgnoreCase(invocation.args()[0]);
+  }
+
+  private int parseHomesPage(CommandInvocation invocation) {
+    if (invocation.args().length == 0) {
+      return 1;
+    }
+    if (!isHomesPageRequest(invocation) || invocation.args().length != 2) {
+      return -1;
+    }
+    try {
+      return Integer.parseInt(invocation.args()[1]);
+    } catch (NumberFormatException ex) {
+      return -1;
+    }
   }
 
   private Component localMessage(String path, String fallback, String... placeholders) {

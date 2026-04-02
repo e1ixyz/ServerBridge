@@ -16,6 +16,7 @@ public final class ProxyConfig {
   public boolean teleports = true;
   public boolean homes = true;
   public String essentialsUserdataPath = "plugins/Essentials/userdata";
+  public int homesPerPage = 8;
   public int teleportRequestTimeoutSeconds = 120;
   public ServerManagerCompatibility serverManagerCompatibility = new ServerManagerCompatibility();
   public Messages messages = new Messages();
@@ -28,6 +29,18 @@ public final class ProxyConfig {
     public String privateMessageReceived = "<gray>from <light_purple><player></light_purple><gray>: <white><message></white></gray>";
     public String nobodyMessagedRecently = "<red>Nobody has messaged you recently.</red>";
     public String privateReplyTargetOffline = "<red>That player is no longer online.</red>";
+    public String targetMessagesDisabled = "<red><target> is not accepting private messages.</red>";
+    public String targetIgnoringYou = "<red><target> is ignoring you.</red>";
+    public String privateMessagesEnabled = "<green>You can now receive private messages.</green>";
+    public String privateMessagesMuted = "<yellow>You will no longer receive private messages.</yellow>";
+    public String ignoreListEmpty = "<gray>You are not ignoring anyone.</gray>";
+    public String ignoreListHeader = "<gold>Ignored players:</gold>";
+    public String ignoreListEntry = "<dark_gray>- </dark_gray><aqua><target></aqua>";
+    public String cannotIgnoreSelf = "<red>You cannot ignore yourself.</red>";
+    public String ignoreAdded = "<yellow>You are now ignoring <target>.</yellow>";
+    public String ignoreRemoved = "<green>You are no longer ignoring <target>.</green>";
+    public String notIgnoringTarget = "<red>You are not ignoring <target>.</red>";
+    public String socialSettingsUpdateFailed = "<red>Failed to update your social settings.</red>";
     public String networkTeleportsDisabled = "<red>Network teleports are disabled.</red>";
     public String cannotTargetSelf = "<red>You cannot target yourself.</red>";
     public String teleportRequestAlreadyPending = "<red>You already have a pending teleport request with <target>.</red>";
@@ -62,9 +75,15 @@ public final class ProxyConfig {
     public String noHomesFound = "<red>No Essentials homes were found across the managed servers.</red>";
     public String homeMissing = "<red>No home named '<home>' was found on the network.</red>";
     public String homeAmbiguous = "<yellow>That home exists on multiple servers. Pick one:</yellow>";
-    public String homeListHeader = "<gold>Network homes:</gold>";
+    public String homeListHeader = "<gold>Network homes <gray>(Page <page>/<pages>)</gray>:</gold>";
     public String homeListEntry = "<dark_gray>- </dark_gray><aqua><home></aqua><gray> [<server>]</gray>";
     public String homeListHover = "<yellow>Teleport to this home</yellow>";
+    public String homeInvalidPage = "<red>Page <page> is out of range. Choose 1-<pages>.</red>";
+    public String homePageIndicator = "<gray>Page <page>/<pages></gray>";
+    public String homePagePrevious = "<yellow>[Previous]</yellow>";
+    public String homePagePreviousHover = "<yellow>Go to page <page></yellow>";
+    public String homePageNext = "<yellow>[Next]</yellow>";
+    public String homePageNextHover = "<yellow>Go to page <page></yellow>";
     public String targetServerNotRegistered = "<red>Target server is not registered with Velocity: <server></red>";
     public String homeSendingToServer = "<green>Sending you to <server> for /home <home>...</green>";
     public String teleportTargetUnavailable = "<red>Target server is unavailable right now.</red>";
@@ -102,6 +121,9 @@ public final class ProxyConfig {
       if (config.essentialsUserdataPath == null || config.essentialsUserdataPath.isBlank()) {
         config.essentialsUserdataPath = "plugins/Essentials/userdata";
       }
+      if (config.homesPerPage <= 0) {
+        config.homesPerPage = 8;
+      }
       if (config.teleportRequestTimeoutSeconds <= 0) {
         config.teleportRequestTimeoutSeconds = 120;
       }
@@ -122,6 +144,7 @@ public final class ProxyConfig {
         teleports: true
         homes: true
         essentialsUserdataPath: "plugins/Essentials/userdata"
+        homesPerPage: 8
         teleportRequestTimeoutSeconds: 120
         prefix: "<dark_aqua>[ServerBridge] </dark_aqua>"
         serverManagerCompatibility:
@@ -135,6 +158,18 @@ public final class ProxyConfig {
           privateMessageReceived: "<gray>from <light_purple><player></light_purple><gray>: <white><message></white></gray>"
           nobodyMessagedRecently: "<red>Nobody has messaged you recently.</red>"
           privateReplyTargetOffline: "<red>That player is no longer online.</red>"
+          targetMessagesDisabled: "<red><target> is not accepting private messages.</red>"
+          targetIgnoringYou: "<red><target> is ignoring you.</red>"
+          privateMessagesEnabled: "<green>You can now receive private messages.</green>"
+          privateMessagesMuted: "<yellow>You will no longer receive private messages.</yellow>"
+          ignoreListEmpty: "<gray>You are not ignoring anyone.</gray>"
+          ignoreListHeader: "<gold>Ignored players:</gold>"
+          ignoreListEntry: "<dark_gray>- </dark_gray><aqua><target></aqua>"
+          cannotIgnoreSelf: "<red>You cannot ignore yourself.</red>"
+          ignoreAdded: "<yellow>You are now ignoring <target>.</yellow>"
+          ignoreRemoved: "<green>You are no longer ignoring <target>.</green>"
+          notIgnoringTarget: "<red>You are not ignoring <target>.</red>"
+          socialSettingsUpdateFailed: "<red>Failed to update your social settings.</red>"
           networkTeleportsDisabled: "<red>Network teleports are disabled.</red>"
           cannotTargetSelf: "<red>You cannot target yourself.</red>"
           teleportRequestAlreadyPending: "<red>You already have a pending teleport request with <target>.</red>"
@@ -169,9 +204,15 @@ public final class ProxyConfig {
           noHomesFound: "<red>No Essentials homes were found across the managed servers.</red>"
           homeMissing: "<red>No home named '<home>' was found on the network.</red>"
           homeAmbiguous: "<yellow>That home exists on multiple servers. Pick one:</yellow>"
-          homeListHeader: "<gold>Network homes:</gold>"
+          homeListHeader: "<gold>Network homes <gray>(Page <page>/<pages>)</gray>:</gold>"
           homeListEntry: "<dark_gray>- </dark_gray><aqua><home></aqua><gray> [<server>]</gray>"
           homeListHover: "<yellow>Teleport to this home</yellow>"
+          homeInvalidPage: "<red>Page <page> is out of range. Choose 1-<pages>.</red>"
+          homePageIndicator: "<gray>Page <page>/<pages></gray>"
+          homePagePrevious: "<yellow>[Previous]</yellow>"
+          homePagePreviousHover: "<yellow>Go to page <page></yellow>"
+          homePageNext: "<yellow>[Next]</yellow>"
+          homePageNextHover: "<yellow>Go to page <page></yellow>"
           targetServerNotRegistered: "<red>Target server is not registered with Velocity: <server></red>"
           homeSendingToServer: "<green>Sending you to <server> for /home <home>...</green>"
           teleportTargetUnavailable: "<red>Target server is unavailable right now.</red>"

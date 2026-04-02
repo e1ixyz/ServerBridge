@@ -1,7 +1,1 @@
-{
-  "id": "serverbridgeproxy",
-  "name": "ServerBridgeProxy",
-  "version": "0.1.0",
-  "main": "dev.e1ixyz.serverbridge.proxy.ServerBridgeProxyPlugin",
-  "authors": ["e1ixyz"]
-}
+{"id":"serverbridgeproxy","name":"ServerBridgeProxy","version":"0.1.0","authors":["e1ixyz"],"dependencies":[],"main":"dev.e1ixyz.serverbridge.proxy.ServerBridgeProxyPlugin"}

@@ -9,11 +9,13 @@ The current implementation is built around your existing `ServerManager` plugin 
 ## What It Does
 
 - Intercepts EssentialsX-style private message commands on Paper and routes them across the whole proxy network.
+- Intercepts EssentialsX-style `/msgtoggle` and `/ignore` commands on Paper and applies them across the whole proxy network.
 - Intercepts EssentialsX-style teleport request and direct teleport commands on Paper and resolves them across servers.
 - Mirrors formatted chat across servers by forwarding the already-rendered Paper/LPC chat component to the proxy, then broadcasting it to players on other servers.
 - Adds proxy-wide player-name tab completion for target-player command arguments such as `/msg`, `/tpa`, `/tpahere`, `/tpaccept`, `/tpdeny`, `/tp`, and `/tphere`.
 - Broadcasts proxy-wide join/leave announcements from the proxy while letting a backend Paper permission decide whether a player should participate.
 - Reads a player's existing EssentialsX homes from each managed backend and exposes them as one network-wide home list.
+- Adds paginated network home lists with clickable previous/next buttons for players with many homes.
 - For a home on another server, sends the player to that backend first and then runs the normal EssentialsX `/home <name>` command on that backend.
 - Uses `ServerManager`'s managed server list to find backend working directories and Essentials userdata files.
 
@@ -110,6 +112,24 @@ The bridge currently intercepts these EssentialsX command families and their ali
 - `reply`
 - `ereply`
 
+### Private message preferences
+
+- `msgtoggle`
+- `emsgtoggle`
+
+### Ignore
+
+- `ignore`
+- `eignore`
+- `unignore`
+- `eunignore`
+- `delignore`
+- `edelignore`
+- `remignore`
+- `eremignore`
+- `rmignore`
+- `ermignore`
+
 ### Teleport request commands
 
 - `tpa`
@@ -188,6 +208,13 @@ If a player has duplicate home names on multiple servers:
 
 That server-qualified form is only a bridge convenience. The actual teleport still happens through EssentialsX on the destination backend.
 
+For large home lists:
+
+- `/homes` shows page 1
+- `/homes page 2` shows page 2
+- the proxy output includes clickable previous/next controls
+- `/homes someHome` still behaves like the EssentialsX home alias and targets that specific home instead of a page
+
 ## Configuration
 
 Proxy config is written to `plugins/serverbridgeproxy/config.yml`.
@@ -199,6 +226,7 @@ privateMessages: true
 teleports: true
 homes: true
 essentialsUserdataPath: "plugins/Essentials/userdata"
+homesPerPage: 8
 teleportRequestTimeoutSeconds: 120
 serverManagerCompatibility:
   enabled: true
@@ -215,10 +243,17 @@ messages:
 - `prefix` is prepended to ServerBridge-generated proxy messages. Set it to `""` to disable it.
 - `globalChat`, `privateMessages`, `teleports`, `homes` toggle the network bridge features.
 - `essentialsUserdataPath` is resolved inside each managed backend working directory exposed by `ServerManager`.
+- `homesPerPage` controls how many homes appear on each page of the network home list.
 - `teleportRequestTimeoutSeconds` controls network teleport request expiry.
 - `serverManagerCompatibility.enabled` tells the proxy plugin to prefer the explicit ServerManager API.
 - `serverManagerCompatibility.requireEnabledFlag` means the proxy only uses that API when `ServerManager` also has `compatibility.serverBridge.enabled: true`.
-- `messages.*` contains the proxy-side in-game text for PMs, teleport flows, home flows, connection failures, and timeout notices.
+- `messages.*` contains the proxy-side in-game text for PM flows, `/msgtoggle`, `/ignore`, teleport flows, paginated home flows, connection failures, and timeout notices.
+
+The proxy also writes:
+
+- `plugins/serverbridgeproxy/social-preferences.yml`
+
+That file stores persistent network-wide `/msgtoggle` and `/ignore` preferences.
 
 Paper config is written to `plugins/ServerBridgePaper/config.yml`.
 
@@ -232,11 +267,12 @@ messages:
   usagePlayerMessage: "<red>Usage: /<command> <player> <message></red>"
   usageReplyMessage: "<red>Usage: /<command> <message></red>"
   usagePlayerTarget: "<red>Usage: /<command> <player></red>"
+  usageHomesPage: "<red>Usage: /<command> [page <number>]</red>"
   bridgeRequestFailed: "<red>Failed to send bridge request: <reason></red>"
 ```
 
 - The Paper config covers local backend-side ServerBridge messages such as command usage errors and bridge send failures.
-- `networkPlayerCompletions` enables cross-server player suggestions for target-player command arguments.
+- `networkPlayerCompletions` enables cross-server player suggestions for target-player command arguments, including `/ignore` and `/unignore`.
 - Proxy-wide join/leave announcements are on by default for everyone when `joinLeaveAnnouncements.enabled` is true.
 - Silent join/leave behavior is based directly on EssentialsX backend permissions, not a ServerBridge permission:
 - `essentials.silentjoin` suppresses the player's proxy-wide join message.
@@ -317,6 +353,7 @@ privateMessages: true
 teleports: true
 homes: true
 essentialsUserdataPath: "plugins/Essentials/userdata"
+homesPerPage: 8
 teleportRequestTimeoutSeconds: 120
 serverManagerCompatibility:
   enabled: true
@@ -338,7 +375,7 @@ Its `prefix` and `messages.*` entries control Paper-side usage/error messages be
 ## Notes
 
 - Global chat forwards the rendered chat component from the source server, so remote players see the same formatting that LPC produced on the source backend.
-- Target-player command completions on Paper are built from a proxy-fed network player snapshot, so players on other backends appear in suggestions.
+- Target-player command completions on Paper are built from a proxy-fed network player snapshot, so players on other backends appear in suggestions for commands like `/msg`, `/tpa`, and `/ignore`.
 - Proxy join/leave announcements are emitted for everyone by default, except players who currently have the configured backend silent permission for that event.
 - The bridge relies on plugin messaging, so the Paper plugin talks to the proxy through connected players.
 - The bridge is intended for a network where players are typically already on one SMP and may target another SMP that is offline; `ServerManager` is expected to do the actual backend boot and eventual player send.
