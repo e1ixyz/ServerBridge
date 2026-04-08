@@ -4,3 +4,10 @@ main: dev.e1ixyz.serverbridge.paper.ServerBridgePaperPlugin
 api-version: "1.21"
 authors:
   - e1ixyz
+commands:
+  stash:
+    description: Opens the shared proxy network stash.
+    aliases:
+      - networkstash
+      - networkec
+      - nec

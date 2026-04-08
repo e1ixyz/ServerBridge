@@ -11,6 +11,8 @@ import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -132,6 +134,19 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     getServer().getMessenger().registerOutgoingPluginChannel(this, BridgeProtocol.CHANNEL);
     getServer().getMessenger().registerIncomingPluginChannel(this, BridgeProtocol.CHANNEL, this);
     getLogger().info("ServerBridge paper plugin enabled on channel " + BridgeProtocol.CHANNEL);
+  }
+
+  @Override
+  public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+    if (!(sender instanceof Player player)) {
+      sender.sendMessage("This command can only be used by players.");
+      return true;
+    }
+    if (!STASH_ALIASES.contains(command.getName().toLowerCase(Locale.ROOT))
+        && !"stash".equalsIgnoreCase(command.getName())) {
+      return false;
+    }
+    return handleStashCommand(player, label, args);
   }
 
   @Override
@@ -321,19 +336,8 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       }
 
       if (STASH_ALIASES.contains(invocation.baseCommand())) {
-        if (!stashEnabled()) {
-          player.sendMessage(localMessage("messages.stashDisabled", DEFAULT_STASH_DISABLED));
-          event.setCancelled(true);
-          return;
-        }
-        if (invocation.args().length != 0) {
-          player.sendMessage(localMessage("messages.usageStash", DEFAULT_USAGE_STASH, "command", invocation.label()));
-          event.setCancelled(true);
-          return;
-        }
         event.setCancelled(true);
-        send(player, BridgeMessageType.STASH_OPEN, out -> {
-        });
+        handleStashCommand(player, invocation.label(), invocation.args());
         return;
       }
 
@@ -478,6 +482,24 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     }
     event.setCancelled(true);
     send(player, type, out -> BridgeProtocol.writeString(out, invocation.args()[0]));
+  }
+
+  private boolean handleStashCommand(Player player, String label, String[] args) {
+    if (!stashEnabled()) {
+      player.sendMessage(localMessage("messages.stashDisabled", DEFAULT_STASH_DISABLED));
+      return true;
+    }
+    if (args.length != 0) {
+      player.sendMessage(localMessage("messages.usageStash", DEFAULT_USAGE_STASH, "command", label == null ? "stash" : label));
+      return true;
+    }
+    try {
+      send(player, BridgeMessageType.STASH_OPEN, out -> {
+      });
+    } catch (IOException ex) {
+      player.sendMessage(localMessage("messages.bridgeRequestFailed", DEFAULT_BRIDGE_REQUEST_FAILED, "reason", ex.getMessage()));
+    }
+    return true;
   }
 
   private void send(Player player, BridgeMessageType type, BridgeProtocol.PacketWriter writer) throws IOException {
