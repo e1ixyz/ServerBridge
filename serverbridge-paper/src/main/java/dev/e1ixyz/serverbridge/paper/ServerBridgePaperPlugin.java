@@ -987,7 +987,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   }
 
   private ItemStack depositPlaceholderItem() {
-    return guiItem(
+    return guiMarkedItem(
         Material.YELLOW_STAINED_GLASS_PANE,
         "stash.depositInputName",
         DEFAULT_STASH_DEPOSIT_INPUT_NAME,
@@ -1012,8 +1012,8 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     return item;
   }
 
-  private ItemStack guiItem(Material material, String namePath, String fallbackName,
-                            String lorePath, List<String> fallbackLore, String marker, String... placeholders) {
+  private ItemStack guiMarkedItem(Material material, String namePath, String fallbackName,
+                                  String lorePath, List<String> fallbackLore, String marker, String... placeholders) {
     ItemStack item = new ItemStack(material);
     item.editMeta(meta -> applyGuiMeta(meta, namePath, fallbackName, lorePath, fallbackLore, marker, placeholders));
     return item;
