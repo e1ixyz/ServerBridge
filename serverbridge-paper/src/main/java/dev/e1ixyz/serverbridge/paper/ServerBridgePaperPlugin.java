@@ -11,6 +11,7 @@ import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -30,6 +31,7 @@ import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 
@@ -62,10 +64,15 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   private static final String DEFAULT_STASH_OVERFLOW_DROPPED = "<yellow>Your inventory filled up, so the withdrawn stack was dropped at your feet.</yellow>";
   private static final String DEFAULT_STASH_RETURNED_INPUT = "<yellow>The stash input item was returned to your inventory.</yellow>";
   private static final String DEFAULT_STASH_DROPPED_INPUT = "<yellow>Your inventory was full, so the stash input item was dropped at your feet.</yellow>";
-  private static final String DEFAULT_STASH_DEPOSIT_INPUT_NAME = "<yellow>Deposit Slot</yellow>";
+  private static final String DEFAULT_STASH_DEPOSIT_INPUT_NAME = "<gold>Place Stack Here</gold>";
   private static final List<String> DEFAULT_STASH_DEPOSIT_INPUT_LORE = List.of(
-      "<gray>Place one stack here.",
-      "<gray>Click the confirm item to deposit it."
+      "<gray>Click this slot while holding the stack",
+      "<gray>you want to add to the shared stash."
+  );
+  private static final String DEFAULT_STASH_DEPOSIT_GUIDE_NAME = "<yellow>Deposit Guide</yellow>";
+  private static final List<String> DEFAULT_STASH_DEPOSIT_GUIDE_LORE = List.of(
+      "<gray>1. Put one stack in the slot on the left.",
+      "<gray>2. Click Confirm Deposit."
   );
   private static final String DEFAULT_STASH_DEPOSIT_CONFIRM_NAME = "<green>Confirm Deposit</green>";
   private static final List<String> DEFAULT_STASH_DEPOSIT_CONFIRM_LORE = List.of(
@@ -125,11 +132,13 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   private final ConcurrentMap<UUID, String> passthroughOnce = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, NetworkPlayer> networkPlayers = new ConcurrentHashMap<>();
   private final ConcurrentMap<UUID, StashView> stashViews = new ConcurrentHashMap<>();
+  private NamespacedKey guiItemMarkerKey;
 
   @Override
   public void onEnable() {
     saveDefaultConfig();
     reloadConfig();
+    guiItemMarkerKey = new NamespacedKey(this, "gui-item");
     getServer().getPluginManager().registerEvents(this, this);
     getServer().getMessenger().registerOutgoingPluginChannel(this, BridgeProtocol.CHANNEL);
     getServer().getMessenger().registerIncomingPluginChannel(this, BridgeProtocol.CHANNEL, this);
@@ -396,14 +405,8 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     }
 
     if (rawSlot == view.depositInputSlot()) {
-      if (view.awaitingResponse()) {
-        event.setCancelled(true);
-        player.sendMessage(localMessage("messages.stashActionPending", DEFAULT_STASH_ACTION_PENDING));
-        return;
-      }
-      if (!isAllowedDepositInputAction(event)) {
-        event.setCancelled(true);
-      }
+      event.setCancelled(true);
+      handleDepositInputClick(player, view, event);
       return;
     }
 
@@ -625,10 +628,8 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
         if (view.closed()) {
           returnInputItem(player, pendingDeposit, true);
         } else {
-          view.inventory().setItem(view.depositInputSlot(), pendingDeposit);
+          renderDepositInputSlot(view, pendingDeposit);
         }
-      } else if (success) {
-        view.inventory().setItem(view.depositInputSlot(), null);
       }
     }
 
@@ -659,7 +660,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       if (!isEmpty(existing.pendingDepositItem())) {
         returnInputItem(player, existing.pendingDepositItem(), false);
       }
-      ItemStack inputItem = existing.inventory().getItem(existing.depositInputSlot());
+      ItemStack inputItem = currentDepositInput(existing);
       if (!isEmpty(inputItem)) {
         returnInputItem(player, inputItem, false);
       }
@@ -685,6 +686,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   }
 
   private void refreshStashView(StashView view, List<ItemStack> stashItems, String timezoneLabel) {
+    ItemStack depositInput = currentDepositInput(view);
     int usedSlots = 0;
     for (int slot = 0; slot < view.stashSlots(); slot++) {
       ItemStack stack = slot < stashItems.size() ? stashItems.get(slot) : null;
@@ -695,11 +697,8 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     }
 
     for (int slot = view.stashSlots(); slot < view.inventory().getSize(); slot++) {
-      if (slot == view.depositInputSlot()) {
-        continue;
-      }
       view.inventory().setItem(slot, guiItem(
-          Material.GRAY_STAINED_GLASS_PANE,
+          slot == view.depositConfirmSlot() ? Material.LIME_STAINED_GLASS_PANE : Material.ORANGE_STAINED_GLASS_PANE,
           "stash.fillerName",
           DEFAULT_STASH_FILLER_NAME,
           null,
@@ -707,12 +706,13 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       ));
     }
 
+    renderDepositInputSlot(view, depositInput);
     view.inventory().setItem(view.depositInfoSlot(), guiItem(
-        Material.HOPPER,
-        "stash.depositInputName",
-        DEFAULT_STASH_DEPOSIT_INPUT_NAME,
-        "stash.depositInputLore",
-        DEFAULT_STASH_DEPOSIT_INPUT_LORE
+        Material.ARROW,
+        "stash.depositGuideName",
+        DEFAULT_STASH_DEPOSIT_GUIDE_NAME,
+        "stash.depositGuideLore",
+        DEFAULT_STASH_DEPOSIT_GUIDE_LORE
     ));
     view.inventory().setItem(view.depositConfirmSlot(), guiItem(
         Material.LIME_CONCRETE,
@@ -771,7 +771,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       return;
     }
 
-    ItemStack input = view.inventory().getItem(view.depositInputSlot());
+    ItemStack input = currentDepositInput(view);
     if (isEmpty(input)) {
       player.sendMessage(localMessage("messages.stashNoDepositItem", DEFAULT_STASH_NO_DEPOSIT_ITEM));
       return;
@@ -781,7 +781,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       byte[] payload = input.serializeAsBytes();
       view.awaitingResponse(true);
       view.pendingDepositItem(input.clone());
-      view.inventory().setItem(view.depositInputSlot(), null);
+      renderDepositInputSlot(view, null);
       send(player, BridgeMessageType.STASH_DEPOSIT, out -> {
         BridgeProtocol.writeUuid(out, view.sessionId());
         BridgeProtocol.writeByteArray(out, payload);
@@ -789,7 +789,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     } catch (IOException ex) {
       view.awaitingResponse(false);
       view.pendingDepositItem(null);
-      view.inventory().setItem(view.depositInputSlot(), input);
+      renderDepositInputSlot(view, input);
       player.sendMessage(localMessage("messages.bridgeRequestFailed", DEFAULT_BRIDGE_REQUEST_FAILED, "reason", ex.getMessage()));
     }
   }
@@ -843,9 +843,9 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       view.pendingDepositItem(null);
     }
 
-    ItemStack input = view.inventory().getItem(view.depositInputSlot());
+    ItemStack input = currentDepositInput(view);
     if (!isEmpty(input)) {
-      view.inventory().setItem(view.depositInputSlot(), null);
+      renderDepositInputSlot(view, null);
       returnInputItem(player, input, true);
     }
   }
@@ -858,24 +858,43 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     }
   }
 
-  private boolean isAllowedDepositInputAction(InventoryClickEvent event) {
-    InventoryAction action = event.getAction();
-    ClickType click = event.getClick();
+  private void handleDepositInputClick(Player player, StashView view, InventoryClickEvent event) {
+    if (view.awaitingResponse()) {
+      player.sendMessage(localMessage("messages.stashActionPending", DEFAULT_STASH_ACTION_PENDING));
+      return;
+    }
     if (event.isShiftClick()) {
-      return false;
+      return;
     }
+    ClickType click = event.getClick();
+    InventoryAction action = event.getAction();
     if (click == ClickType.NUMBER_KEY || click == ClickType.SWAP_OFFHAND || click == ClickType.DOUBLE_CLICK) {
-      return false;
+      return;
     }
-    return action == InventoryAction.PICKUP_ALL
-        || action == InventoryAction.PICKUP_HALF
-        || action == InventoryAction.PICKUP_ONE
-        || action == InventoryAction.PICKUP_SOME
-        || action == InventoryAction.PLACE_ALL
-        || action == InventoryAction.PLACE_ONE
-        || action == InventoryAction.PLACE_SOME
-        || action == InventoryAction.SWAP_WITH_CURSOR
-        || action == InventoryAction.NOTHING;
+    if (action == InventoryAction.NOTHING) {
+      return;
+    }
+
+    ItemStack currentInput = currentDepositInput(view);
+    ItemStack cursor = event.getCursor();
+
+    if (isEmpty(cursor)) {
+      if (isEmpty(currentInput)) {
+        return;
+      }
+      player.setItemOnCursor(currentInput.clone());
+      renderDepositInputSlot(view, null);
+      return;
+    }
+
+    if (isEmpty(currentInput)) {
+      renderDepositInputSlot(view, cursor.clone());
+      player.setItemOnCursor(null);
+      return;
+    }
+
+    renderDepositInputSlot(view, cursor.clone());
+    player.setItemOnCursor(currentInput.clone());
   }
 
   private boolean canFitInInventory(Player player, ItemStack stack) {
@@ -954,19 +973,61 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     return stack == null || stack.getType().isAir() || stack.getAmount() <= 0;
   }
 
+  private ItemStack currentDepositInput(StashView view) {
+    ItemStack stack = view.inventory().getItem(view.depositInputSlot());
+    return isDepositPlaceholder(stack) ? null : stack;
+  }
+
+  private void renderDepositInputSlot(StashView view, ItemStack stack) {
+    if (isEmpty(stack)) {
+      view.inventory().setItem(view.depositInputSlot(), depositPlaceholderItem());
+      return;
+    }
+    view.inventory().setItem(view.depositInputSlot(), stack.clone());
+  }
+
+  private ItemStack depositPlaceholderItem() {
+    return guiItem(
+        Material.YELLOW_STAINED_GLASS_PANE,
+        "stash.depositInputName",
+        DEFAULT_STASH_DEPOSIT_INPUT_NAME,
+        "stash.depositInputLore",
+        DEFAULT_STASH_DEPOSIT_INPUT_LORE,
+        "deposit-placeholder"
+    );
+  }
+
+  private boolean isDepositPlaceholder(ItemStack stack) {
+    if (isEmpty(stack) || guiItemMarkerKey == null || !stack.hasItemMeta()) {
+      return false;
+    }
+    String marker = stack.getItemMeta().getPersistentDataContainer().get(guiItemMarkerKey, PersistentDataType.STRING);
+    return "deposit-placeholder".equals(marker);
+  }
+
   private ItemStack guiItem(Material material, String namePath, String fallbackName,
                             String lorePath, List<String> fallbackLore, String... placeholders) {
     ItemStack item = new ItemStack(material);
-    item.editMeta(meta -> applyGuiMeta(meta, namePath, fallbackName, lorePath, fallbackLore, placeholders));
+    item.editMeta(meta -> applyGuiMeta(meta, namePath, fallbackName, lorePath, fallbackLore, null, placeholders));
+    return item;
+  }
+
+  private ItemStack guiItem(Material material, String namePath, String fallbackName,
+                            String lorePath, List<String> fallbackLore, String marker, String... placeholders) {
+    ItemStack item = new ItemStack(material);
+    item.editMeta(meta -> applyGuiMeta(meta, namePath, fallbackName, lorePath, fallbackLore, marker, placeholders));
     return item;
   }
 
   private void applyGuiMeta(ItemMeta meta, String namePath, String fallbackName,
-                            String lorePath, List<String> fallbackLore, String... placeholders) {
+                            String lorePath, List<String> fallbackLore, String marker, String... placeholders) {
     meta.displayName(configuredComponent(namePath, fallbackName, placeholders));
     List<Component> lore = configuredLore(lorePath, fallbackLore, placeholders);
     if (!lore.isEmpty()) {
       meta.lore(lore);
+    }
+    if (marker != null && guiItemMarkerKey != null) {
+      meta.getPersistentDataContainer().set(guiItemMarkerKey, PersistentDataType.STRING, marker);
     }
     meta.addItemFlags(ItemFlag.values());
   }

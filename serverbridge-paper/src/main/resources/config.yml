@@ -6,10 +6,14 @@ joinLeaveAnnouncements:
 stash:
   enabled: true
   title: "<dark_aqua>Network Stash</dark_aqua>"
-  depositInputName: "<yellow>Deposit Slot</yellow>"
+  depositInputName: "<gold>Place Stack Here</gold>"
   depositInputLore:
-    - "<gray>Place one stack here."
-    - "<gray>Click the confirm item to deposit it."
+    - "<gray>Click this slot while holding the stack"
+    - "<gray>you want to add to the shared stash."
+  depositGuideName: "<yellow>Deposit Guide</yellow>"
+  depositGuideLore:
+    - "<gray>1. Put one stack in the slot on the left."
+    - "<gray>2. Click Confirm Deposit."
   depositConfirmName: "<green>Confirm Deposit</green>"
   depositConfirmLore:
     - "<gray>Consumes one stack from the input slot."
