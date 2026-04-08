@@ -190,6 +190,12 @@ The bridge currently intercepts these EssentialsX command families and their ali
 - `networkec`
 - `nec`
 
+### Stash admin
+
+- `stashlog`
+- `stashlogs`
+- `stashreset`
+
 ## Current Teleport Semantics
 
 - `tpa` and `tpahere` work across servers.
@@ -233,8 +239,16 @@ Behavior:
 - the stash inventory is shared by every player on the proxy
 - each player can deposit one stack per real calendar day
 - each player can withdraw one stack per real calendar day
+- container-style items such as bundles and shulker boxes are blocked from deposit
 - the proxy is authoritative for the stash contents and the daily limits
 - Paper only renders the GUI and serializes/deserializes the item payloads
+
+Admin commands:
+
+- `/stashlog` shows the latest stash audit log page
+- `/stashlog ELX 2` shows page 2 filtered to a specific player
+- `/stashreset ELX` resets both daily limits for that player
+- `/stashreset ELX deposit` resets only deposit usage
 
 Items are transferred with Paper's raw `ItemStack.serializeAsBytes()` format, so current 1.21.11 item components are preserved for modern items such as enchanted weapons, trimmed gear, written books, and other custom metadata-bearing stacks.
 
@@ -281,6 +295,7 @@ messages:
 - `serverManagerCompatibility.enabled` tells the proxy plugin to prefer the explicit ServerManager API.
 - `serverManagerCompatibility.requireEnabledFlag` means the proxy only uses that API when `ServerManager` also has `compatibility.serverBridge.enabled: true`.
 - `messages.*` contains the proxy-side in-game text for PM flows, `/msgtoggle`, `/ignore`, teleport flows, paginated home flows, stash limits/errors, connection failures, and timeout notices.
+- the proxy also owns stash audit logging and daily-reset admin output for `/stashlog` and `/stashreset`.
 
 The proxy also writes:
 
@@ -292,6 +307,7 @@ Those files store:
 - persistent network-wide `/msgtoggle` and `/ignore` preferences
 - the shared stash contents
 - per-player daily stash deposit/withdraw usage
+- stash audit log history
 
 Paper config is written to `plugins/ServerBridgePaper/config.yml`.
 
@@ -311,15 +327,19 @@ messages:
   usagePlayerTarget: "<red>Usage: /<command> <player></red>"
   usageHomesPage: "<red>Usage: /<command> [page <number>]</red>"
   usageStash: "<red>Usage: /<command></red>"
+  usageStashLog: "<red>Usage: /<command> [player] [page]</red>"
+  usageStashReset: "<red>Usage: /<command> <player> [deposit|withdraw|all]</red>"
   bridgeRequestFailed: "<red>Failed to send bridge request: <reason></red>"
   stashDisabled: "<red>The network stash is disabled on this server.</red>"
   stashNoDepositItem: "<red>Place one stack in the deposit slot first.</red>"
+  stashContainerBlocked: "<red>Container items cannot be placed in the network stash.</red>"
   stashNoWithdrawSpace: "<red>Clear inventory space before withdrawing that stack.</red>"
 ```
 
 - The Paper config covers local backend-side ServerBridge messages such as command usage errors and bridge send failures.
 - `stash.enabled` lets you disable `/stash` on a specific backend while leaving it enabled on other servers.
 - The `stash.*` section controls the `/stash` GUI title, summary item, and control-item text shown on Paper.
+- `serverbridge.stashlog` and `serverbridge.stashreset` are backend permissions with `op` default for the stash admin commands.
 - `networkPlayerCompletions` enables cross-server player suggestions for target-player command arguments, including `/ignore` and `/unignore`.
 - Proxy-wide join/leave announcements are on by default for everyone when `joinLeaveAnnouncements.enabled` is true.
 - Silent join/leave behavior is based directly on EssentialsX backend permissions, not a ServerBridge permission:

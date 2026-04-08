@@ -30,7 +30,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.DateTimeException;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -57,6 +59,8 @@ public final class ServerBridgeProxyPlugin {
   private static final byte STASH_ACTION_OPEN = 0;
   private static final byte STASH_ACTION_DEPOSIT = 1;
   private static final byte STASH_ACTION_WITHDRAW = 2;
+  private static final int STASH_LOGS_PER_PAGE = 8;
+  private static final DateTimeFormatter STASH_LOG_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
   private final ProxyServer proxy;
   private final Logger logger;
@@ -158,13 +162,17 @@ public final class ServerBridgeProxyPlugin {
         case STASH_DEPOSIT -> handleStashDeposit(
             player,
             BridgeProtocol.readUuid(decoded.in()),
-            BridgeProtocol.readByteArray(decoded.in())
+            BridgeProtocol.readByteArray(decoded.in()),
+            BridgeProtocol.readString(decoded.in())
         );
         case STASH_WITHDRAW -> handleStashWithdraw(
             player,
             BridgeProtocol.readUuid(decoded.in()),
             decoded.in().readInt()
         );
+        case STASH_LOGS -> handleStashLogs(player, BridgeProtocol.readNullableString(decoded.in()), decoded.in().readInt());
+        case STASH_RESET -> handleStashReset(player, BridgeProtocol.readString(decoded.in()), BridgeProtocol.readString(decoded.in()));
+        case STASH_TOGGLE -> handleStashToggle(player, BridgeProtocol.readNullableString(decoded.in()));
         default -> logger.warn("Ignoring unsupported proxy-bound bridge packet {}", decoded.type());
       }
     } catch (Exception ex) {
@@ -717,6 +725,7 @@ public final class ServerBridgeProxyPlugin {
     stashSessions.put(player.getUniqueId(), sessionId);
     NetworkStashStore.StashSnapshot snapshot = networkStashStore.snapshot(
         player.getUniqueId(),
+        player.getUsername(),
         networkStashZoneId,
         configuredStashSlots()
     );
@@ -730,7 +739,7 @@ public final class ServerBridgeProxyPlugin {
     stashSessions.remove(player.getUniqueId(), sessionId);
   }
 
-  private void handleStashDeposit(Player player, UUID sessionId, byte[] itemBytes) {
+  private void handleStashDeposit(Player player, UUID sessionId, byte[] itemBytes, String itemSummary) {
     ProxyConfig.Messages messages = messagesConfig();
     if (!networkStashEnabled()) {
       message(player, messages.stashDisabled);
@@ -748,9 +757,11 @@ public final class ServerBridgeProxyPlugin {
     try {
       NetworkStashStore.DepositResult result = networkStashStore.deposit(
           player.getUniqueId(),
+          player.getUsername(),
           networkStashZoneId,
           configuredStashSlots(),
-          itemBytes
+          itemBytes,
+          itemSummary
       );
       if (result.status() != NetworkStashStore.StashActionStatus.SUCCESS) {
         message(player, stashStatusTemplate(result.status()));
@@ -783,6 +794,7 @@ public final class ServerBridgeProxyPlugin {
     try {
       NetworkStashStore.WithdrawResult result = networkStashStore.withdraw(
           player.getUniqueId(),
+          player.getUsername(),
           networkStashZoneId,
           configuredStashSlots(),
           slot
@@ -796,6 +808,105 @@ public final class ServerBridgeProxyPlugin {
           result.snapshot());
     } catch (IOException ex) {
       logger.error("Failed to update network stash withdraw for {}", player.getUsername(), ex);
+      message(player, messages.stashSaveFailed);
+    }
+  }
+
+  private void handleStashLogs(Player player, String filterPlayerName, int requestedPage) {
+    ProxyConfig.Messages messages = messagesConfig();
+    if (networkStashStore == null) {
+      message(player, messages.stashSaveFailed);
+      return;
+    }
+
+    NetworkStashStore.LogPage page = networkStashStore.listLogs(filterPlayerName, requestedPage <= 0 ? 1 : requestedPage, STASH_LOGS_PER_PAGE);
+    if (page.totalEntries() == 0) {
+      message(player, messages.stashLogsEmpty);
+      return;
+    }
+
+    String filterLabel = page.filterPlayerName() == null ? "" : "for " + page.filterPlayerName();
+    message(player, messages.stashLogsHeader,
+        "page", Integer.toString(page.page()),
+        "pages", Integer.toString(page.totalPages()),
+        "filter", filterLabel);
+
+    for (NetworkStashStore.LogEntry entry : page.entries()) {
+      player.sendMessage(formatStashLogEntry(messages, entry));
+    }
+
+    if (page.totalPages() > 1) {
+      player.sendMessage(buildStashLogsPaginationLine(messages, page.filterPlayerName(), page.page(), page.totalPages()));
+    }
+  }
+
+  private void handleStashReset(Player player, String targetName, String scopeName) {
+    ProxyConfig.Messages messages = messagesConfig();
+    if (networkStashStore == null) {
+      message(player, messages.stashSaveFailed);
+      return;
+    }
+
+    NetworkStashStore.ResetScope scope = parseResetScope(scopeName);
+    if (scope == null) {
+      message(player, messages.stashInvalidAction);
+      return;
+    }
+
+    Player onlineTarget = resolveOnlinePlayer(targetName);
+    NetworkStashStore.TrackedPlayer tracked = onlineTarget != null
+        ? new NetworkStashStore.TrackedPlayer(onlineTarget.getUniqueId(), onlineTarget.getUsername())
+        : networkStashStore.resolveTrackedPlayer(targetName);
+    if (tracked == null) {
+      message(player, messages.stashResetTargetUnknown, "target", targetName);
+      return;
+    }
+
+    try {
+      NetworkStashStore.ResetResult result = networkStashStore.resetUsage(
+          tracked.uuid(),
+          tracked.name(),
+          scope,
+          player.getUniqueId(),
+          player.getUsername()
+      );
+      message(player, messages.stashResetSuccess,
+          "scope", scope.name().toLowerCase(),
+          "target", result.targetName());
+    } catch (IOException ex) {
+      logger.error("Failed to reset stash usage for {}", tracked.name(), ex);
+      message(player, messages.stashSaveFailed);
+    }
+  }
+
+  private void handleStashToggle(Player player, String requestedState) {
+    ProxyConfig.Messages messages = messagesConfig();
+    if (config == null) {
+      message(player, messages.stashSaveFailed);
+      return;
+    }
+    if (config.networkStash == null) {
+      config.networkStash = new ProxyConfig.NetworkStash();
+    }
+
+    boolean enabled = config.networkStash.enabled;
+    if (requestedState == null || requestedState.isBlank()) {
+      enabled = !enabled;
+    } else if ("on".equalsIgnoreCase(requestedState) || "enable".equalsIgnoreCase(requestedState)) {
+      enabled = true;
+    } else if ("off".equalsIgnoreCase(requestedState) || "disable".equalsIgnoreCase(requestedState)) {
+      enabled = false;
+    } else {
+      message(player, messages.stashInvalidAction);
+      return;
+    }
+
+    config.networkStash.enabled = enabled;
+    try {
+      ProxyConfig.save(dataDir.resolve("config.yml"), config);
+      message(player, enabled ? messages.stashToggleEnabled : messages.stashToggleDisabled);
+    } catch (IOException ex) {
+      logger.error("Failed to save stash toggle state", ex);
       message(player, messages.stashSaveFailed);
     }
   }
@@ -902,6 +1013,47 @@ public final class ServerBridgeProxyPlugin {
     for (SocialPreferencesStore.IgnoredEntry entry : ignored) {
       message(player, messages.ignoreListEntry, "target", entry.name());
     }
+  }
+
+  private Component formatStashLogEntry(ProxyConfig.Messages messages, NetworkStashStore.LogEntry entry) {
+    String timestamp = STASH_LOG_TIME_FORMAT.format(Instant.ofEpochMilli(entry.timestamp()).atZone(networkStashZoneId));
+    return switch (entry.action()) {
+      case DEPOSIT -> prefixed(messages.stashLogDepositEntry,
+          "timestamp", timestamp,
+          "player", entry.playerName(),
+          "detail", entry.detail());
+      case WITHDRAW -> prefixed(messages.stashLogWithdrawEntry,
+          "timestamp", timestamp,
+          "player", entry.playerName(),
+          "detail", entry.detail());
+      case RESET -> prefixed(messages.stashLogResetEntry,
+          "timestamp", timestamp,
+          "actor", entry.actorName() == null ? "System" : entry.actorName(),
+          "player", entry.playerName(),
+          "detail", entry.detail() == null ? "all" : entry.detail());
+    };
+  }
+
+  private Component buildStashLogsPaginationLine(ProxyConfig.Messages messages, String filterPlayerName, int page, int totalPages) {
+    Component line = prefixed(messages.stashLogsPageIndicator,
+        "page", Integer.toString(page),
+        "pages", Integer.toString(totalPages));
+    String filterPrefix = filterPlayerName == null || filterPlayerName.isBlank() ? "" : filterPlayerName + " ";
+    if (page > 1) {
+      line = line.append(Component.space()).append(render(messages.stashLogsPagePrevious,
+              "page", Integer.toString(page - 1),
+              "pages", Integer.toString(totalPages))
+          .clickEvent(ClickEvent.runCommand("/stashlog " + filterPrefix + (page - 1)))
+          .hoverEvent(HoverEvent.showText(render(messages.stashLogsPagePreviousHover, "page", Integer.toString(page - 1)))));
+    }
+    if (page < totalPages) {
+      line = line.append(Component.space()).append(render(messages.stashLogsPageNext,
+              "page", Integer.toString(page + 1),
+              "pages", Integer.toString(totalPages))
+          .clickEvent(ClickEvent.runCommand("/stashlog " + filterPrefix + (page + 1)))
+          .hoverEvent(HoverEvent.showText(render(messages.stashLogsPageNextHover, "page", Integer.toString(page + 1)))));
+    }
+    return line;
   }
 
   private Component buildHomePaginationLine(ProxyConfig.Messages messages, int page, int totalPages) {
@@ -1344,6 +1496,17 @@ public final class ServerBridgeProxyPlugin {
       case INVALID_SLOT, INVALID_ITEM -> messages.stashInvalidAction;
       case SUCCESS -> "";
     };
+  }
+
+  private NetworkStashStore.ResetScope parseResetScope(String value) {
+    if (value == null || value.isBlank()) {
+      return NetworkStashStore.ResetScope.ALL;
+    }
+    try {
+      return NetworkStashStore.ResetScope.valueOf(value.trim().toUpperCase());
+    } catch (IllegalArgumentException ex) {
+      return null;
+    }
   }
 
   private void broadcast(Component component) {

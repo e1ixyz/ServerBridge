@@ -100,6 +100,20 @@ public final class ProxyConfig {
     public String stashEmptySlot = "<red>That stash slot is empty.</red>";
     public String stashInvalidAction = "<red>That stash action was invalid.</red>";
     public String stashSaveFailed = "<red>Failed to update the network stash.</red>";
+    public String stashLogsEmpty = "<gray>No matching stash log entries were found.</gray>";
+    public String stashLogsHeader = "<gold>Stash logs <gray>(Page <page>/<pages>)</gray> <gray><filter></gray></gold>";
+    public String stashLogDepositEntry = "<dark_gray>- </dark_gray><gray><timestamp></gray> <yellow><player></yellow><gray> deposited </gray><aqua><detail></aqua>";
+    public String stashLogWithdrawEntry = "<dark_gray>- </dark_gray><gray><timestamp></gray> <yellow><player></yellow><gray> withdrew </gray><aqua><detail></aqua>";
+    public String stashLogResetEntry = "<dark_gray>- </dark_gray><gray><timestamp></gray> <yellow><actor></yellow><gray> reset </gray><aqua><player></aqua><gray> (<detail>)</gray>";
+    public String stashLogsPageIndicator = "<gray>Page <page>/<pages></gray>";
+    public String stashLogsPagePrevious = "<yellow>[Previous]</yellow>";
+    public String stashLogsPagePreviousHover = "<yellow>Go to page <page></yellow>";
+    public String stashLogsPageNext = "<yellow>[Next]</yellow>";
+    public String stashLogsPageNextHover = "<yellow>Go to page <page></yellow>";
+    public String stashResetTargetUnknown = "<red>No tracked stash player matched <target>.</red>";
+    public String stashResetSuccess = "<green>Reset <scope> stash usage for <target>.</green>";
+    public String stashToggleEnabled = "<green>The network stash is now enabled.</green>";
+    public String stashToggleDisabled = "<yellow>The network stash is now disabled.</yellow>";
     public String joinAnnouncement = "<yellow><user> joined <server></yellow>";
     public String leaveAnnouncement = "<yellow><user> left <server></yellow>";
   }
@@ -157,6 +171,13 @@ public final class ProxyConfig {
       }
       return config;
     }
+  }
+
+  public static void save(Path path, ProxyConfig config) throws IOException {
+    if (path.getParent() != null) {
+      Files.createDirectories(path.getParent());
+    }
+    Files.writeString(path, new Yaml().dumpAsMap(config), StandardCharsets.UTF_8);
   }
 
   private static String defaultYaml() {
@@ -254,6 +275,20 @@ public final class ProxyConfig {
           stashEmptySlot: "<red>That stash slot is empty.</red>"
           stashInvalidAction: "<red>That stash action was invalid.</red>"
           stashSaveFailed: "<red>Failed to update the network stash.</red>"
+          stashLogsEmpty: "<gray>No matching stash log entries were found.</gray>"
+          stashLogsHeader: "<gold>Stash logs <gray>(Page <page>/<pages>)</gray> <gray><filter></gray></gold>"
+          stashLogDepositEntry: "<dark_gray>- </dark_gray><gray><timestamp></gray> <yellow><player></yellow><gray> deposited </gray><aqua><detail></aqua>"
+          stashLogWithdrawEntry: "<dark_gray>- </dark_gray><gray><timestamp></gray> <yellow><player></yellow><gray> withdrew </gray><aqua><detail></aqua>"
+          stashLogResetEntry: "<dark_gray>- </dark_gray><gray><timestamp></gray> <yellow><actor></yellow><gray> reset </gray><aqua><player></aqua><gray> (<detail>)</gray>"
+          stashLogsPageIndicator: "<gray>Page <page>/<pages></gray>"
+          stashLogsPagePrevious: "<yellow>[Previous]</yellow>"
+          stashLogsPagePreviousHover: "<yellow>Go to page <page></yellow>"
+          stashLogsPageNext: "<yellow>[Next]</yellow>"
+          stashLogsPageNextHover: "<yellow>Go to page <page></yellow>"
+          stashResetTargetUnknown: "<red>No tracked stash player matched <target>.</red>"
+          stashResetSuccess: "<green>Reset <scope> stash usage for <target>.</green>"
+          stashToggleEnabled: "<green>The network stash is now enabled.</green>"
+          stashToggleDisabled: "<yellow>The network stash is now disabled.</yellow>"
           joinAnnouncement: "<yellow><user> joined <server></yellow>"
           leaveAnnouncement: "<yellow><user> left <server></yellow>"
         """;

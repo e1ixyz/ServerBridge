@@ -11,3 +11,21 @@ commands:
       - networkstash
       - networkec
       - nec
+  stashlog:
+    description: Views paginated shared stash audit logs.
+    aliases:
+      - stashlogs
+    permission: serverbridge.stashlog
+  stashreset:
+    description: Resets a player's daily stash deposit/withdraw usage.
+    permission: serverbridge.stashreset
+  stashtoggle:
+    description: Enables or disables the shared proxy network stash.
+    permission: serverbridge.stashtoggle
+permissions:
+  serverbridge.stashlog:
+    default: op
+  serverbridge.stashreset:
+    default: op
+  serverbridge.stashtoggle:
+    default: op

@@ -9,9 +9,11 @@ import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
+import org.bukkit.block.Container;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -30,6 +32,7 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.BlockStateMeta;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -55,10 +58,14 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   private static final String DEFAULT_USAGE_PLAYER_TARGET = "<red>Usage: /<command> <player></red>";
   private static final String DEFAULT_USAGE_HOMES_PAGE = "<red>Usage: /<command> [page <number>]</red>";
   private static final String DEFAULT_USAGE_STASH = "<red>Usage: /<command></red>";
+  private static final String DEFAULT_USAGE_STASH_LOG = "<red>Usage: /<command> [player] [page]</red>";
+  private static final String DEFAULT_USAGE_STASH_RESET = "<red>Usage: /<command> <player> [deposit|withdraw|all]</red>";
+  private static final String DEFAULT_USAGE_STASH_TOGGLE = "<red>Usage: /<command> [on|off]</red>";
   private static final String DEFAULT_BRIDGE_REQUEST_FAILED = "<red>Failed to send bridge request: <reason></red>";
   private static final String DEFAULT_STASH_DISABLED = "<red>The network stash is disabled on this server.</red>";
   private static final String DEFAULT_STASH_TITLE = "<dark_aqua>Network Stash</dark_aqua>";
   private static final String DEFAULT_STASH_NO_DEPOSIT_ITEM = "<red>Place one stack in the deposit slot first.</red>";
+  private static final String DEFAULT_STASH_CONTAINER_BLOCKED = "<red>Container items cannot be placed in the network stash.</red>";
   private static final String DEFAULT_STASH_NO_WITHDRAW_SPACE = "<red>Clear inventory space before withdrawing that stack.</red>";
   private static final String DEFAULT_STASH_ACTION_PENDING = "<yellow>Please wait for the previous stash action to finish.</yellow>";
   private static final String DEFAULT_STASH_OVERFLOW_DROPPED = "<yellow>Your inventory filled up, so the withdrawn stack was dropped at your feet.</yellow>";
@@ -128,6 +135,9 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   private static final Set<String> HOME_ALIASES = Set.of("home", "ehome");
   private static final Set<String> HOMES_ALIASES = Set.of("homes", "ehomes", "listhomes");
   private static final Set<String> STASH_ALIASES = Set.of("stash", "networkstash", "networkec", "nec");
+  private static final Set<String> STASH_LOG_ALIASES = Set.of("stashlog", "stashlogs");
+  private static final Set<String> STASH_RESET_ALIASES = Set.of("stashreset");
+  private static final Set<String> STASH_TOGGLE_ALIASES = Set.of("stashtoggle");
 
   private final ConcurrentMap<UUID, String> passthroughOnce = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, NetworkPlayer> networkPlayers = new ConcurrentHashMap<>();
@@ -151,11 +161,20 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       sender.sendMessage("This command can only be used by players.");
       return true;
     }
-    if (!STASH_ALIASES.contains(command.getName().toLowerCase(Locale.ROOT))
-        && !"stash".equalsIgnoreCase(command.getName())) {
-      return false;
+    String commandName = command.getName().toLowerCase(Locale.ROOT);
+    if (STASH_ALIASES.contains(commandName) || "stash".equals(commandName)) {
+      return handleStashCommand(player, label, args);
     }
-    return handleStashCommand(player, label, args);
+    if (STASH_LOG_ALIASES.contains(commandName)) {
+      return handleStashLogCommand(player, label, args);
+    }
+    if (STASH_RESET_ALIASES.contains(commandName)) {
+      return handleStashResetCommand(player, label, args);
+    }
+    if (STASH_TOGGLE_ALIASES.contains(commandName)) {
+      return handleStashToggleCommand(player, label, args);
+    }
+    return false;
   }
 
   @Override
@@ -505,6 +524,85 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     return true;
   }
 
+  private boolean handleStashLogCommand(Player player, String label, String[] args) {
+    String filter = null;
+    int page = 1;
+    if (args.length > 2) {
+      player.sendMessage(localMessage("messages.usageStashLog", DEFAULT_USAGE_STASH_LOG, "command", label == null ? "stashlog" : label));
+      return true;
+    }
+    if (args.length == 1) {
+      Integer parsedPage = parsePositiveInteger(args[0]);
+      if (parsedPage != null) {
+        page = parsedPage;
+      } else {
+        filter = args[0];
+      }
+    } else if (args.length == 2) {
+      filter = args[0];
+      Integer parsedPage = parsePositiveInteger(args[1]);
+      if (parsedPage == null) {
+        player.sendMessage(localMessage("messages.usageStashLog", DEFAULT_USAGE_STASH_LOG, "command", label == null ? "stashlog" : label));
+        return true;
+      }
+      page = parsedPage;
+    }
+
+    try {
+      int finalPage = Math.max(1, page);
+      String finalFilter = filter;
+      send(player, BridgeMessageType.STASH_LOGS, out -> {
+        BridgeProtocol.writeNullableString(out, finalFilter);
+        out.writeInt(finalPage);
+      });
+    } catch (IOException ex) {
+      player.sendMessage(localMessage("messages.bridgeRequestFailed", DEFAULT_BRIDGE_REQUEST_FAILED, "reason", ex.getMessage()));
+    }
+    return true;
+  }
+
+  private boolean handleStashResetCommand(Player player, String label, String[] args) {
+    if (args.length < 1 || args.length > 2) {
+      player.sendMessage(localMessage("messages.usageStashReset", DEFAULT_USAGE_STASH_RESET, "command", label == null ? "stashreset" : label));
+      return true;
+    }
+    String scope = args.length == 1 ? "all" : args[1].toLowerCase(Locale.ROOT);
+    if (!"all".equals(scope) && !"deposit".equals(scope) && !"withdraw".equals(scope)) {
+      player.sendMessage(localMessage("messages.usageStashReset", DEFAULT_USAGE_STASH_RESET, "command", label == null ? "stashreset" : label));
+      return true;
+    }
+
+    try {
+      send(player, BridgeMessageType.STASH_RESET, out -> {
+        BridgeProtocol.writeString(out, args[0]);
+        BridgeProtocol.writeString(out, scope);
+      });
+    } catch (IOException ex) {
+      player.sendMessage(localMessage("messages.bridgeRequestFailed", DEFAULT_BRIDGE_REQUEST_FAILED, "reason", ex.getMessage()));
+    }
+    return true;
+  }
+
+  private boolean handleStashToggleCommand(Player player, String label, String[] args) {
+    if (args.length > 1) {
+      player.sendMessage(localMessage("messages.usageStashToggle", DEFAULT_USAGE_STASH_TOGGLE, "command", label == null ? "stashtoggle" : label));
+      return true;
+    }
+    String state = args.length == 0 ? null : args[0].toLowerCase(Locale.ROOT);
+    if (state != null && !"on".equals(state) && !"off".equals(state)) {
+      player.sendMessage(localMessage("messages.usageStashToggle", DEFAULT_USAGE_STASH_TOGGLE, "command", label == null ? "stashtoggle" : label));
+      return true;
+    }
+
+    try {
+      String finalState = state;
+      send(player, BridgeMessageType.STASH_TOGGLE, out -> BridgeProtocol.writeNullableString(out, finalState));
+    } catch (IOException ex) {
+      player.sendMessage(localMessage("messages.bridgeRequestFailed", DEFAULT_BRIDGE_REQUEST_FAILED, "reason", ex.getMessage()));
+    }
+    return true;
+  }
+
   private void send(Player player, BridgeMessageType type, BridgeProtocol.PacketWriter writer) throws IOException {
     byte[] payload = BridgeProtocol.encode(type, out -> {
       BridgeProtocol.writeUuid(out, player.getUniqueId());
@@ -776,15 +874,21 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       player.sendMessage(localMessage("messages.stashNoDepositItem", DEFAULT_STASH_NO_DEPOSIT_ITEM));
       return;
     }
+    if (isBlockedContainerItem(input)) {
+      player.sendMessage(localMessage("messages.stashContainerBlocked", DEFAULT_STASH_CONTAINER_BLOCKED));
+      return;
+    }
 
     try {
       byte[] payload = input.serializeAsBytes();
+      String itemSummary = describeItem(input);
       view.awaitingResponse(true);
       view.pendingDepositItem(input.clone());
       renderDepositInputSlot(view, null);
       send(player, BridgeMessageType.STASH_DEPOSIT, out -> {
         BridgeProtocol.writeUuid(out, view.sessionId());
         BridgeProtocol.writeByteArray(out, payload);
+        BridgeProtocol.writeString(out, itemSummary);
       });
     } catch (IOException ex) {
       view.awaitingResponse(false);
@@ -918,6 +1022,76 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       }
     }
     return false;
+  }
+
+  private boolean isBlockedContainerItem(ItemStack stack) {
+    if (isEmpty(stack)) {
+      return false;
+    }
+    Material type = stack.getType();
+    if (type == Material.BUNDLE
+        || type == Material.CHEST
+        || type == Material.TRAPPED_CHEST
+        || type == Material.BARREL
+        || type == Material.HOPPER
+        || type == Material.DROPPER
+        || type == Material.DISPENSER
+        || type == Material.FURNACE
+        || type == Material.BLAST_FURNACE
+        || type == Material.SMOKER
+        || type == Material.BREWING_STAND
+        || type == Material.CHISELED_BOOKSHELF
+        || type == Material.CHEST_MINECART
+        || type == Material.HOPPER_MINECART
+        || type == Material.FURNACE_MINECART
+        || type == Material.SHULKER_BOX
+        || type.name().endsWith("_SHULKER_BOX")) {
+      return true;
+    }
+    return stack.getItemMeta() instanceof BlockStateMeta blockStateMeta
+        && blockStateMeta.getBlockState() instanceof Container;
+  }
+
+  private String describeItem(ItemStack stack) {
+    if (isEmpty(stack)) {
+      return "unknown item";
+    }
+    ItemMeta meta = stack.getItemMeta();
+    String name = meta != null && meta.hasDisplayName()
+        ? PlainTextComponentSerializer.plainText().serialize(meta.displayName())
+        : prettifyMaterial(stack.getType());
+    String trimmed = name == null ? "" : name.trim();
+    if (trimmed.isEmpty()) {
+      trimmed = prettifyMaterial(stack.getType());
+    }
+    return trimmed + " x" + stack.getAmount();
+  }
+
+  private String prettifyMaterial(Material material) {
+    String[] parts = material.name().toLowerCase(Locale.ROOT).split("_");
+    StringBuilder builder = new StringBuilder();
+    for (String part : parts) {
+      if (part.isEmpty()) {
+        continue;
+      }
+      if (builder.length() > 0) {
+        builder.append(' ');
+      }
+      builder.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
+    }
+    return builder.toString();
+  }
+
+  private Integer parsePositiveInteger(String value) {
+    if (value == null || value.isBlank()) {
+      return null;
+    }
+    try {
+      int parsed = Integer.parseInt(value);
+      return parsed > 0 ? parsed : null;
+    } catch (NumberFormatException ex) {
+      return null;
+    }
   }
 
   private void giveOrDrop(Player player, ItemStack stack, String overflowPath, String overflowFallback) {
@@ -1081,6 +1255,8 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     return MSG_ALIASES.contains(baseCommand)
         || IGNORE_ALIASES.contains(baseCommand)
         || UNIGNORE_ALIASES.contains(baseCommand)
+        || STASH_LOG_ALIASES.contains(baseCommand)
+        || STASH_RESET_ALIASES.contains(baseCommand)
         || TPA_ALIASES.contains(baseCommand)
         || TPACANCEL_ALIASES.contains(baseCommand)
         || TPAHERE_ALIASES.contains(baseCommand)
