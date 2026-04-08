@@ -10,20 +10,33 @@ import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.ClickType;
+import org.bukkit.event.inventory.InventoryAction;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.InventoryHolder;
+import org.bukkit.inventory.ItemFlag;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
@@ -37,9 +50,54 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   private static final String DEFAULT_USAGE_REPLY_MESSAGE = "<red>Usage: /<command> <message></red>";
   private static final String DEFAULT_USAGE_PLAYER_TARGET = "<red>Usage: /<command> <player></red>";
   private static final String DEFAULT_USAGE_HOMES_PAGE = "<red>Usage: /<command> [page <number>]</red>";
+  private static final String DEFAULT_USAGE_STASH = "<red>Usage: /<command></red>";
   private static final String DEFAULT_BRIDGE_REQUEST_FAILED = "<red>Failed to send bridge request: <reason></red>";
+  private static final String DEFAULT_STASH_TITLE = "<dark_aqua>Network Stash</dark_aqua>";
+  private static final String DEFAULT_STASH_NO_DEPOSIT_ITEM = "<red>Place one stack in the deposit slot first.</red>";
+  private static final String DEFAULT_STASH_NO_WITHDRAW_SPACE = "<red>Clear inventory space before withdrawing that stack.</red>";
+  private static final String DEFAULT_STASH_ACTION_PENDING = "<yellow>Please wait for the previous stash action to finish.</yellow>";
+  private static final String DEFAULT_STASH_OVERFLOW_DROPPED = "<yellow>Your inventory filled up, so the withdrawn stack was dropped at your feet.</yellow>";
+  private static final String DEFAULT_STASH_RETURNED_INPUT = "<yellow>The stash input item was returned to your inventory.</yellow>";
+  private static final String DEFAULT_STASH_DROPPED_INPUT = "<yellow>Your inventory was full, so the stash input item was dropped at your feet.</yellow>";
+  private static final String DEFAULT_STASH_DEPOSIT_INPUT_NAME = "<yellow>Deposit Slot</yellow>";
+  private static final List<String> DEFAULT_STASH_DEPOSIT_INPUT_LORE = List.of(
+      "<gray>Place one stack here.",
+      "<gray>Click the confirm item to deposit it."
+  );
+  private static final String DEFAULT_STASH_DEPOSIT_CONFIRM_NAME = "<green>Confirm Deposit</green>";
+  private static final List<String> DEFAULT_STASH_DEPOSIT_CONFIRM_LORE = List.of(
+      "<gray>Consumes one stack from the input slot.",
+      "<gray>You can deposit only once per real day."
+  );
+  private static final String DEFAULT_STASH_DEPOSIT_AVAILABLE_NAME = "<green>Deposit Available</green>";
+  private static final List<String> DEFAULT_STASH_DEPOSIT_AVAILABLE_LORE = List.of(
+      "<gray>You can still deposit one stack today."
+  );
+  private static final String DEFAULT_STASH_DEPOSIT_USED_NAME = "<red>Deposit Used</red>";
+  private static final List<String> DEFAULT_STASH_DEPOSIT_USED_LORE = List.of(
+      "<gray>You already deposited one stack today."
+  );
+  private static final String DEFAULT_STASH_WITHDRAW_AVAILABLE_NAME = "<green>Withdraw Available</green>";
+  private static final List<String> DEFAULT_STASH_WITHDRAW_AVAILABLE_LORE = List.of(
+      "<gray>You can still withdraw one stack today."
+  );
+  private static final String DEFAULT_STASH_WITHDRAW_USED_NAME = "<red>Withdraw Used</red>";
+  private static final List<String> DEFAULT_STASH_WITHDRAW_USED_LORE = List.of(
+      "<gray>You already withdrew one stack today."
+  );
+  private static final String DEFAULT_STASH_SUMMARY_NAME = "<aqua>Shared Proxy Stash</aqua>";
+  private static final List<String> DEFAULT_STASH_SUMMARY_LORE = List.of(
+      "<gray>Used slots: <used>/<total>",
+      "<gray>Deposit today: <deposit_status>",
+      "<gray>Withdraw today: <withdraw_status>",
+      "<gray>Resets at midnight <timezone>"
+  );
+  private static final String DEFAULT_STASH_FILLER_NAME = " ";
   private static final String ESSENTIALS_SILENT_JOIN_PERMISSION = "essentials.silentjoin";
   private static final String ESSENTIALS_SILENT_QUIT_PERMISSION = "essentials.silentquit";
+  private static final byte STASH_ACTION_OPEN = 0;
+  private static final byte STASH_ACTION_DEPOSIT = 1;
+  private static final byte STASH_ACTION_WITHDRAW = 2;
   private static final Set<String> MSGTOGGLE_ALIASES = Set.of("msgtoggle", "emsgtoggle");
   private static final Set<String> IGNORE_ALIASES = Set.of("ignore", "eignore");
   private static final Set<String> UNIGNORE_ALIASES = Set.of(
@@ -59,9 +117,11 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   private static final Set<String> TPHERE_ALIASES = Set.of("tphere", "s", "etphere");
   private static final Set<String> HOME_ALIASES = Set.of("home", "ehome");
   private static final Set<String> HOMES_ALIASES = Set.of("homes", "ehomes", "listhomes");
+  private static final Set<String> STASH_ALIASES = Set.of("stash", "networkstash", "networkec", "nec");
 
   private final ConcurrentMap<UUID, String> passthroughOnce = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, NetworkPlayer> networkPlayers = new ConcurrentHashMap<>();
+  private final ConcurrentMap<UUID, StashView> stashViews = new ConcurrentHashMap<>();
 
   @Override
   public void onEnable() {
@@ -79,6 +139,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     getServer().getMessenger().unregisterIncomingPluginChannel(this);
     passthroughOnce.clear();
     networkPlayers.clear();
+    stashViews.clear();
   }
 
   @EventHandler(priority = EventPriority.HIGHEST)
@@ -95,6 +156,8 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     if (shouldSuppressLocalJoinLeaveMessages()) {
       event.quitMessage(null);
     }
+    StashView view = stashViews.get(event.getPlayer().getUniqueId());
+    cleanupStashView(event.getPlayer(), true, view != null && !view.awaitingResponse());
   }
 
   @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -256,6 +319,18 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
         return;
       }
 
+      if (STASH_ALIASES.contains(invocation.baseCommand())) {
+        if (invocation.args().length != 0) {
+          player.sendMessage(localMessage("messages.usageStash", DEFAULT_USAGE_STASH, "command", invocation.label()));
+          event.setCancelled(true);
+          return;
+        }
+        event.setCancelled(true);
+        send(player, BridgeMessageType.STASH_OPEN, out -> {
+        });
+        return;
+      }
+
       if (HOME_ALIASES.contains(invocation.baseCommand())) {
         event.setCancelled(true);
         send(player, BridgeMessageType.HOME, out -> BridgeProtocol.writeNullableString(out, firstArg(invocation)));
@@ -283,6 +358,84 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     }
   }
 
+  @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+  public void onInventoryClick(InventoryClickEvent event) {
+    if (!(event.getWhoClicked() instanceof Player player)) {
+      return;
+    }
+    StashView view = stashViews.get(player.getUniqueId());
+    if (view == null || event.getView().getTopInventory() != view.inventory()) {
+      return;
+    }
+
+    int rawSlot = event.getRawSlot();
+    if (rawSlot < 0) {
+      return;
+    }
+    if (rawSlot >= view.inventory().getSize()) {
+      if (event.isShiftClick()) {
+        event.setCancelled(true);
+      }
+      return;
+    }
+
+    if (rawSlot < view.stashSlots()) {
+      event.setCancelled(true);
+      handleStashWithdrawClick(player, view, rawSlot);
+      return;
+    }
+
+    if (rawSlot == view.depositInputSlot()) {
+      if (view.awaitingResponse()) {
+        event.setCancelled(true);
+        player.sendMessage(localMessage("messages.stashActionPending", DEFAULT_STASH_ACTION_PENDING));
+        return;
+      }
+      if (!isAllowedDepositInputAction(event)) {
+        event.setCancelled(true);
+      }
+      return;
+    }
+
+    event.setCancelled(true);
+    if (rawSlot == view.depositConfirmSlot()) {
+      handleStashDepositClick(player, view);
+    }
+  }
+
+  @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+  public void onInventoryDrag(InventoryDragEvent event) {
+    if (!(event.getWhoClicked() instanceof Player player)) {
+      return;
+    }
+    StashView view = stashViews.get(player.getUniqueId());
+    if (view == null || event.getView().getTopInventory() != view.inventory()) {
+      return;
+    }
+    for (int rawSlot : event.getRawSlots()) {
+      if (rawSlot < view.inventory().getSize()) {
+        event.setCancelled(true);
+        return;
+      }
+    }
+  }
+
+  @EventHandler(priority = EventPriority.MONITOR)
+  public void onInventoryClose(InventoryCloseEvent event) {
+    if (!(event.getPlayer() instanceof Player player)) {
+      return;
+    }
+    StashView view = stashViews.get(player.getUniqueId());
+    if (view == null || event.getInventory() != view.inventory()) {
+      return;
+    }
+    if (view.awaitingResponse()) {
+      view.closed(true);
+      return;
+    }
+    cleanupStashView(player, true, true);
+  }
+
   @Override
   public void onPluginMessageReceived(String channel, Player sourcePlayer, byte[] message) {
     if (!BridgeProtocol.CHANNEL.equals(channel)) {
@@ -303,6 +456,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
           runTeleport(movingPlayer, targetPlayer, 0);
         }
         case NETWORK_PLAYER_SNAPSHOT -> updateNetworkPlayers(decoded.in().readInt(), decoded);
+        case STASH_SYNC -> handleStashSync(sourcePlayer, decoded);
         default -> getLogger().warning("Ignoring unsupported backend-bound bridge packet " + decoded.type());
       }
     } catch (Exception ex) {
@@ -383,6 +537,430 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       String server = BridgeProtocol.readString(decoded.in());
       networkPlayers.put(username.toLowerCase(Locale.ROOT), new NetworkPlayer(username, server));
     }
+  }
+
+  private void handleStashSync(Player sourcePlayer, BridgeProtocol.DecodedMessage decoded) throws IOException {
+    if (sourcePlayer == null) {
+      return;
+    }
+
+    UUID sessionId = BridgeProtocol.readUuid(decoded.in());
+    byte action = decoded.in().readByte();
+    boolean success = decoded.in().readBoolean();
+    byte[] withdrawnItem = BridgeProtocol.readNullableByteArray(decoded.in());
+    int slotCount = decoded.in().readInt();
+    if (slotCount <= 0 || slotCount % 9 != 0 || slotCount > 45) {
+      throw new IOException("Invalid stash slot count: " + slotCount);
+    }
+
+    List<ItemStack> stashItems = new ArrayList<>(slotCount);
+    for (int slot = 0; slot < slotCount; slot++) {
+      stashItems.add(deserializeItem(BridgeProtocol.readNullableByteArray(decoded.in())));
+    }
+
+    String timezoneLabel = BridgeProtocol.readString(decoded.in());
+    boolean depositAvailable = decoded.in().readBoolean();
+    boolean withdrawAvailable = decoded.in().readBoolean();
+
+    Bukkit.getScheduler().runTask(this, () -> applyStashSync(
+        sourcePlayer.getUniqueId(),
+        sessionId,
+        action,
+        success,
+        withdrawnItem,
+        stashItems,
+        timezoneLabel,
+        depositAvailable,
+        withdrawAvailable
+    ));
+  }
+
+  private void applyStashSync(UUID playerUuid, UUID sessionId, byte action, boolean success,
+                              byte[] withdrawnItemBytes, List<ItemStack> stashItems, String timezoneLabel,
+                              boolean depositAvailable, boolean withdrawAvailable) {
+    Player player = Bukkit.getPlayer(playerUuid);
+    if (player == null) {
+      return;
+    }
+
+    StashView view = prepareStashView(player, sessionId, stashItems.size());
+    view.depositAvailable(depositAvailable);
+    view.withdrawAvailable(withdrawAvailable);
+    view.awaitingResponse(false);
+
+    refreshStashView(view, stashItems, timezoneLabel);
+
+    if (action == STASH_ACTION_DEPOSIT) {
+      ItemStack pendingDeposit = view.pendingDepositItem();
+      view.pendingDepositItem(null);
+      if (!success && !isEmpty(pendingDeposit)) {
+        if (view.closed()) {
+          returnInputItem(player, pendingDeposit, true);
+        } else {
+          view.inventory().setItem(view.depositInputSlot(), pendingDeposit);
+        }
+      } else if (success) {
+        view.inventory().setItem(view.depositInputSlot(), null);
+      }
+    }
+
+    if (action == STASH_ACTION_WITHDRAW && success) {
+      ItemStack withdrawnItem = deserializeItem(withdrawnItemBytes);
+      if (!isEmpty(withdrawnItem)) {
+        giveOrDrop(player, withdrawnItem, "messages.stashOverflowDropped", DEFAULT_STASH_OVERFLOW_DROPPED);
+      }
+    }
+
+    if (view.closed()) {
+      cleanupStashView(player, true, true);
+      return;
+    }
+
+    if (action == STASH_ACTION_OPEN || player.getOpenInventory().getTopInventory() != view.inventory()) {
+      player.openInventory(view.inventory());
+    }
+  }
+
+  private StashView prepareStashView(Player player, UUID sessionId, int stashSlots) {
+    StashView existing = stashViews.get(player.getUniqueId());
+    if (existing != null && existing.sessionId().equals(sessionId) && existing.stashSlots() == stashSlots) {
+      return existing;
+    }
+
+    if (existing != null) {
+      if (!isEmpty(existing.pendingDepositItem())) {
+        returnInputItem(player, existing.pendingDepositItem(), false);
+      }
+      ItemStack inputItem = existing.inventory().getItem(existing.depositInputSlot());
+      if (!isEmpty(inputItem)) {
+        returnInputItem(player, inputItem, false);
+      }
+    }
+
+    StashInventoryHolder holder = new StashInventoryHolder(player.getUniqueId());
+    Inventory inventory = Bukkit.createInventory(holder, stashSlots + 9,
+        configuredComponent("stash.title", DEFAULT_STASH_TITLE));
+    holder.inventory(inventory);
+    StashView view = new StashView(
+        sessionId,
+        inventory,
+        stashSlots,
+        stashSlots,
+        stashSlots + 1,
+        stashSlots + 2,
+        stashSlots + 3,
+        stashSlots + 4,
+        stashSlots + 5
+    );
+    stashViews.put(player.getUniqueId(), view);
+    return view;
+  }
+
+  private void refreshStashView(StashView view, List<ItemStack> stashItems, String timezoneLabel) {
+    int usedSlots = 0;
+    for (int slot = 0; slot < view.stashSlots(); slot++) {
+      ItemStack stack = slot < stashItems.size() ? stashItems.get(slot) : null;
+      if (!isEmpty(stack)) {
+        usedSlots++;
+      }
+      view.inventory().setItem(slot, isEmpty(stack) ? null : stack.clone());
+    }
+
+    for (int slot = view.stashSlots(); slot < view.inventory().getSize(); slot++) {
+      if (slot == view.depositInputSlot()) {
+        continue;
+      }
+      view.inventory().setItem(slot, guiItem(
+          Material.GRAY_STAINED_GLASS_PANE,
+          "stash.fillerName",
+          DEFAULT_STASH_FILLER_NAME,
+          null,
+          List.of()
+      ));
+    }
+
+    view.inventory().setItem(view.depositInfoSlot(), guiItem(
+        Material.HOPPER,
+        "stash.depositInputName",
+        DEFAULT_STASH_DEPOSIT_INPUT_NAME,
+        "stash.depositInputLore",
+        DEFAULT_STASH_DEPOSIT_INPUT_LORE
+    ));
+    view.inventory().setItem(view.depositConfirmSlot(), guiItem(
+        Material.LIME_CONCRETE,
+        "stash.depositConfirmName",
+        DEFAULT_STASH_DEPOSIT_CONFIRM_NAME,
+        "stash.depositConfirmLore",
+        DEFAULT_STASH_DEPOSIT_CONFIRM_LORE
+    ));
+    view.inventory().setItem(view.depositStatusSlot(), view.depositAvailable()
+        ? guiItem(
+        Material.EMERALD,
+        "stash.depositAvailableName",
+        DEFAULT_STASH_DEPOSIT_AVAILABLE_NAME,
+        "stash.depositAvailableLore",
+        DEFAULT_STASH_DEPOSIT_AVAILABLE_LORE
+    )
+        : guiItem(
+        Material.REDSTONE,
+        "stash.depositUsedName",
+        DEFAULT_STASH_DEPOSIT_USED_NAME,
+        "stash.depositUsedLore",
+        DEFAULT_STASH_DEPOSIT_USED_LORE
+    ));
+    view.inventory().setItem(view.withdrawStatusSlot(), view.withdrawAvailable()
+        ? guiItem(
+        Material.ENDER_PEARL,
+        "stash.withdrawAvailableName",
+        DEFAULT_STASH_WITHDRAW_AVAILABLE_NAME,
+        "stash.withdrawAvailableLore",
+        DEFAULT_STASH_WITHDRAW_AVAILABLE_LORE
+    )
+        : guiItem(
+        Material.BARRIER,
+        "stash.withdrawUsedName",
+        DEFAULT_STASH_WITHDRAW_USED_NAME,
+        "stash.withdrawUsedLore",
+        DEFAULT_STASH_WITHDRAW_USED_LORE
+    ));
+    view.inventory().setItem(view.summarySlot(), guiItem(
+        Material.BOOK,
+        "stash.summaryName",
+        DEFAULT_STASH_SUMMARY_NAME,
+        "stash.summaryLore",
+        DEFAULT_STASH_SUMMARY_LORE,
+        "used", Integer.toString(usedSlots),
+        "total", Integer.toString(view.stashSlots()),
+        "deposit_status", view.depositAvailable() ? "available" : "used",
+        "withdraw_status", view.withdrawAvailable() ? "available" : "used",
+        "timezone", timezoneLabel == null || timezoneLabel.isBlank() ? "America/New_York" : timezoneLabel
+    ));
+  }
+
+  private void handleStashDepositClick(Player player, StashView view) {
+    if (view.awaitingResponse()) {
+      player.sendMessage(localMessage("messages.stashActionPending", DEFAULT_STASH_ACTION_PENDING));
+      return;
+    }
+
+    ItemStack input = view.inventory().getItem(view.depositInputSlot());
+    if (isEmpty(input)) {
+      player.sendMessage(localMessage("messages.stashNoDepositItem", DEFAULT_STASH_NO_DEPOSIT_ITEM));
+      return;
+    }
+
+    try {
+      byte[] payload = input.serializeAsBytes();
+      view.awaitingResponse(true);
+      view.pendingDepositItem(input.clone());
+      view.inventory().setItem(view.depositInputSlot(), null);
+      send(player, BridgeMessageType.STASH_DEPOSIT, out -> {
+        BridgeProtocol.writeUuid(out, view.sessionId());
+        BridgeProtocol.writeByteArray(out, payload);
+      });
+    } catch (IOException ex) {
+      view.awaitingResponse(false);
+      view.pendingDepositItem(null);
+      view.inventory().setItem(view.depositInputSlot(), input);
+      player.sendMessage(localMessage("messages.bridgeRequestFailed", DEFAULT_BRIDGE_REQUEST_FAILED, "reason", ex.getMessage()));
+    }
+  }
+
+  private void handleStashWithdrawClick(Player player, StashView view, int slot) {
+    if (view.awaitingResponse()) {
+      player.sendMessage(localMessage("messages.stashActionPending", DEFAULT_STASH_ACTION_PENDING));
+      return;
+    }
+
+    ItemStack stack = view.inventory().getItem(slot);
+    if (isEmpty(stack)) {
+      return;
+    }
+    if (!canFitInInventory(player, stack)) {
+      player.sendMessage(localMessage("messages.stashNoWithdrawSpace", DEFAULT_STASH_NO_WITHDRAW_SPACE));
+      return;
+    }
+
+    try {
+      view.awaitingResponse(true);
+      send(player, BridgeMessageType.STASH_WITHDRAW, out -> {
+        BridgeProtocol.writeUuid(out, view.sessionId());
+        out.writeInt(slot);
+      });
+    } catch (IOException ex) {
+      view.awaitingResponse(false);
+      player.sendMessage(localMessage("messages.bridgeRequestFailed", DEFAULT_BRIDGE_REQUEST_FAILED, "reason", ex.getMessage()));
+    }
+  }
+
+  private void cleanupStashView(Player player, boolean notifyProxy, boolean returnInput) {
+    if (player == null) {
+      return;
+    }
+    StashView view = stashViews.remove(player.getUniqueId());
+    if (view == null) {
+      return;
+    }
+
+    if (notifyProxy) {
+      sendStashClose(player, view.sessionId());
+    }
+
+    if (!returnInput) {
+      return;
+    }
+
+    if (!isEmpty(view.pendingDepositItem())) {
+      returnInputItem(player, view.pendingDepositItem(), true);
+      view.pendingDepositItem(null);
+    }
+
+    ItemStack input = view.inventory().getItem(view.depositInputSlot());
+    if (!isEmpty(input)) {
+      view.inventory().setItem(view.depositInputSlot(), null);
+      returnInputItem(player, input, true);
+    }
+  }
+
+  private void sendStashClose(Player player, UUID sessionId) {
+    try {
+      send(player, BridgeMessageType.STASH_CLOSE, out -> BridgeProtocol.writeUuid(out, sessionId));
+    } catch (IOException ex) {
+      getLogger().warning("Failed to close stash session for " + player.getName() + ": " + ex.getMessage());
+    }
+  }
+
+  private boolean isAllowedDepositInputAction(InventoryClickEvent event) {
+    InventoryAction action = event.getAction();
+    ClickType click = event.getClick();
+    if (event.isShiftClick()) {
+      return false;
+    }
+    if (click == ClickType.NUMBER_KEY || click == ClickType.SWAP_OFFHAND || click == ClickType.DOUBLE_CLICK) {
+      return false;
+    }
+    return action == InventoryAction.PICKUP_ALL
+        || action == InventoryAction.PICKUP_HALF
+        || action == InventoryAction.PICKUP_ONE
+        || action == InventoryAction.PICKUP_SOME
+        || action == InventoryAction.PLACE_ALL
+        || action == InventoryAction.PLACE_ONE
+        || action == InventoryAction.PLACE_SOME
+        || action == InventoryAction.SWAP_WITH_CURSOR
+        || action == InventoryAction.NOTHING;
+  }
+
+  private boolean canFitInInventory(Player player, ItemStack stack) {
+    if (isEmpty(stack)) {
+      return true;
+    }
+    ItemStack[] contents = Arrays.copyOf(player.getInventory().getStorageContents(),
+        player.getInventory().getStorageContents().length);
+    int remaining = stack.getAmount();
+    for (int slot = 0; slot < contents.length; slot++) {
+      ItemStack existing = contents[slot];
+      if (isEmpty(existing)) {
+        return true;
+      }
+      if (!existing.isSimilar(stack)) {
+        continue;
+      }
+      remaining -= Math.max(0, existing.getMaxStackSize() - existing.getAmount());
+      if (remaining <= 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private void giveOrDrop(Player player, ItemStack stack, String overflowPath, String overflowFallback) {
+    if (isEmpty(stack)) {
+      return;
+    }
+    Map<Integer, ItemStack> leftover = player.getInventory().addItem(stack);
+    if (!leftover.isEmpty()) {
+      for (ItemStack value : leftover.values()) {
+        if (!isEmpty(value)) {
+          player.getWorld().dropItemNaturally(player.getLocation(), value);
+        }
+      }
+      player.sendMessage(localMessage(overflowPath, overflowFallback));
+    }
+  }
+
+  private void returnInputItem(Player player, ItemStack stack, boolean notify) {
+    if (isEmpty(stack)) {
+      return;
+    }
+    Map<Integer, ItemStack> leftover = player.getInventory().addItem(stack);
+    if (leftover.isEmpty()) {
+      if (notify) {
+        player.sendMessage(localMessage("messages.stashReturnedInput", DEFAULT_STASH_RETURNED_INPUT));
+      }
+      return;
+    }
+
+    for (ItemStack value : leftover.values()) {
+      if (!isEmpty(value)) {
+        player.getWorld().dropItemNaturally(player.getLocation(), value);
+      }
+    }
+    if (notify) {
+      player.sendMessage(localMessage("messages.stashDroppedInput", DEFAULT_STASH_DROPPED_INPUT));
+    }
+  }
+
+  private ItemStack deserializeItem(byte[] itemBytes) {
+    if (itemBytes == null || itemBytes.length == 0) {
+      return null;
+    }
+    try {
+      return ItemStack.deserializeBytes(itemBytes);
+    } catch (Exception ex) {
+      getLogger().warning("Failed to deserialize stash item payload: " + ex.getMessage());
+      return null;
+    }
+  }
+
+  private boolean isEmpty(ItemStack stack) {
+    return stack == null || stack.getType().isAir() || stack.getAmount() <= 0;
+  }
+
+  private ItemStack guiItem(Material material, String namePath, String fallbackName,
+                            String lorePath, List<String> fallbackLore, String... placeholders) {
+    ItemStack item = new ItemStack(material);
+    item.editMeta(meta -> applyGuiMeta(meta, namePath, fallbackName, lorePath, fallbackLore, placeholders));
+    return item;
+  }
+
+  private void applyGuiMeta(ItemMeta meta, String namePath, String fallbackName,
+                            String lorePath, List<String> fallbackLore, String... placeholders) {
+    meta.displayName(configuredComponent(namePath, fallbackName, placeholders));
+    List<Component> lore = configuredLore(lorePath, fallbackLore, placeholders);
+    if (!lore.isEmpty()) {
+      meta.lore(lore);
+    }
+    meta.addItemFlags(ItemFlag.values());
+  }
+
+  private Component configuredComponent(String path, String fallback, String... placeholders) {
+    String value = path == null ? fallback : getConfig().getString(path, fallback);
+    return MINI.deserialize(value == null ? "" : value, placeholders(placeholders));
+  }
+
+  private List<Component> configuredLore(String path, List<String> fallback, String... placeholders) {
+    List<String> lines = path == null ? List.of() : getConfig().getStringList(path);
+    if ((lines == null || lines.isEmpty()) && fallback != null) {
+      lines = fallback;
+    }
+    if (lines == null || lines.isEmpty()) {
+      return List.of();
+    }
+    List<Component> lore = new ArrayList<>(lines.size());
+    for (String line : lines) {
+      lore.add(MINI.deserialize(line == null ? "" : line, placeholders(placeholders)));
+    }
+    return lore;
   }
 
   private boolean networkPlayerCompletionsEnabled() {
@@ -531,6 +1109,136 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       label = label.substring(colon + 1);
     }
     return label.toLowerCase(Locale.ROOT);
+  }
+
+  private static final class StashInventoryHolder implements InventoryHolder {
+    private final UUID playerUuid;
+    private Inventory inventory;
+
+    private StashInventoryHolder(UUID playerUuid) {
+      this.playerUuid = playerUuid;
+    }
+
+    @Override
+    public Inventory getInventory() {
+      return inventory;
+    }
+
+    private void inventory(Inventory inventory) {
+      this.inventory = inventory;
+    }
+
+    @SuppressWarnings("unused")
+    private UUID playerUuid() {
+      return playerUuid;
+    }
+  }
+
+  private static final class StashView {
+    private final UUID sessionId;
+    private final Inventory inventory;
+    private final int stashSlots;
+    private final int depositInputSlot;
+    private final int depositConfirmSlot;
+    private final int depositInfoSlot;
+    private final int depositStatusSlot;
+    private final int summarySlot;
+    private final int withdrawStatusSlot;
+    private volatile boolean depositAvailable;
+    private volatile boolean withdrawAvailable;
+    private volatile boolean awaitingResponse;
+    private volatile boolean closed;
+    private volatile ItemStack pendingDepositItem;
+
+    private StashView(UUID sessionId, Inventory inventory, int stashSlots, int depositInputSlot,
+                      int depositConfirmSlot, int depositInfoSlot, int depositStatusSlot,
+                      int summarySlot, int withdrawStatusSlot) {
+      this.sessionId = sessionId;
+      this.inventory = inventory;
+      this.stashSlots = stashSlots;
+      this.depositInputSlot = depositInputSlot;
+      this.depositConfirmSlot = depositConfirmSlot;
+      this.depositInfoSlot = depositInfoSlot;
+      this.depositStatusSlot = depositStatusSlot;
+      this.summarySlot = summarySlot;
+      this.withdrawStatusSlot = withdrawStatusSlot;
+    }
+
+    private UUID sessionId() {
+      return sessionId;
+    }
+
+    private Inventory inventory() {
+      return inventory;
+    }
+
+    private int stashSlots() {
+      return stashSlots;
+    }
+
+    private int depositInputSlot() {
+      return depositInputSlot;
+    }
+
+    private int depositConfirmSlot() {
+      return depositConfirmSlot;
+    }
+
+    private int depositInfoSlot() {
+      return depositInfoSlot;
+    }
+
+    private int depositStatusSlot() {
+      return depositStatusSlot;
+    }
+
+    private int summarySlot() {
+      return summarySlot;
+    }
+
+    private int withdrawStatusSlot() {
+      return withdrawStatusSlot;
+    }
+
+    private boolean depositAvailable() {
+      return depositAvailable;
+    }
+
+    private void depositAvailable(boolean depositAvailable) {
+      this.depositAvailable = depositAvailable;
+    }
+
+    private boolean withdrawAvailable() {
+      return withdrawAvailable;
+    }
+
+    private void withdrawAvailable(boolean withdrawAvailable) {
+      this.withdrawAvailable = withdrawAvailable;
+    }
+
+    private boolean awaitingResponse() {
+      return awaitingResponse;
+    }
+
+    private void awaitingResponse(boolean awaitingResponse) {
+      this.awaitingResponse = awaitingResponse;
+    }
+
+    private boolean closed() {
+      return closed;
+    }
+
+    private void closed(boolean closed) {
+      this.closed = closed;
+    }
+
+    private ItemStack pendingDepositItem() {
+      return pendingDepositItem;
+    }
+
+    private void pendingDepositItem(ItemStack pendingDepositItem) {
+      this.pendingDepositItem = pendingDepositItem;
+    }
   }
 
   private record TabCompletionContext(String baseCommand, int argumentIndex, String currentToken) {

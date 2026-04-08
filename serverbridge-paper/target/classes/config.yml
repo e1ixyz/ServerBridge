@@ -3,9 +3,45 @@ networkPlayerCompletions: true
 joinLeaveAnnouncements:
   enabled: true
   suppressLocalMessages: true
+stash:
+  title: "<dark_aqua>Network Stash</dark_aqua>"
+  depositInputName: "<yellow>Deposit Slot</yellow>"
+  depositInputLore:
+    - "<gray>Place one stack here."
+    - "<gray>Click the confirm item to deposit it."
+  depositConfirmName: "<green>Confirm Deposit</green>"
+  depositConfirmLore:
+    - "<gray>Consumes one stack from the input slot."
+    - "<gray>You can deposit only once per real day."
+  depositAvailableName: "<green>Deposit Available</green>"
+  depositAvailableLore:
+    - "<gray>You can still deposit one stack today."
+  depositUsedName: "<red>Deposit Used</red>"
+  depositUsedLore:
+    - "<gray>You already deposited one stack today."
+  withdrawAvailableName: "<green>Withdraw Available</green>"
+  withdrawAvailableLore:
+    - "<gray>You can still withdraw one stack today."
+  withdrawUsedName: "<red>Withdraw Used</red>"
+  withdrawUsedLore:
+    - "<gray>You already withdrew one stack today."
+  summaryName: "<aqua>Shared Proxy Stash</aqua>"
+  summaryLore:
+    - "<gray>Used slots: <used>/<total>"
+    - "<gray>Deposit today: <deposit_status>"
+    - "<gray>Withdraw today: <withdraw_status>"
+    - "<gray>Resets at midnight <timezone>"
+  fillerName: " "
 messages:
   usagePlayerMessage: "<red>Usage: /<command> <player> <message></red>"
   usageReplyMessage: "<red>Usage: /<command> <message></red>"
   usagePlayerTarget: "<red>Usage: /<command> <player></red>"
   usageHomesPage: "<red>Usage: /<command> [page <number>]</red>"
+  usageStash: "<red>Usage: /<command></red>"
   bridgeRequestFailed: "<red>Failed to send bridge request: <reason></red>"
+  stashNoDepositItem: "<red>Place one stack in the deposit slot first.</red>"
+  stashNoWithdrawSpace: "<red>Clear inventory space before withdrawing that stack.</red>"
+  stashActionPending: "<yellow>Please wait for the previous stash action to finish.</yellow>"
+  stashOverflowDropped: "<yellow>Your inventory filled up, so the withdrawn stack was dropped at your feet.</yellow>"
+  stashReturnedInput: "<yellow>The stash input item was returned to your inventory.</yellow>"
+  stashDroppedInput: "<yellow>Your inventory was full, so the stash input item was dropped at your feet.</yellow>"

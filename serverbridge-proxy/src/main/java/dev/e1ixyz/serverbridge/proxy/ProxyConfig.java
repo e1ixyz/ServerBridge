@@ -15,6 +15,7 @@ public final class ProxyConfig {
   public boolean privateMessages = true;
   public boolean teleports = true;
   public boolean homes = true;
+  public NetworkStash networkStash = new NetworkStash();
   public String essentialsUserdataPath = "plugins/Essentials/userdata";
   public int homesPerPage = 8;
   public int teleportRequestTimeoutSeconds = 120;
@@ -91,8 +92,22 @@ public final class ProxyConfig {
     public String failedDispatchTeleport = "<red>Failed to dispatch the teleport to the backend.</red>";
     public String failedConnectToServer = "<red>Failed to connect to <server>.</red>";
     public String crossServerActionTimedOut = "<red>Timed out waiting to finish the cross-server action.</red>";
+    public String stashDisabled = "<red>The network stash is disabled.</red>";
+    public String stashSessionExpired = "<red>Your network stash session expired. Reopen /stash.</red>";
+    public String stashDepositUsed = "<yellow>You have already deposited a stack into the network stash today.</yellow>";
+    public String stashWithdrawUsed = "<yellow>You have already withdrawn a stack from the network stash today.</yellow>";
+    public String stashFull = "<red>The network stash is full right now.</red>";
+    public String stashEmptySlot = "<red>That stash slot is empty.</red>";
+    public String stashInvalidAction = "<red>That stash action was invalid.</red>";
+    public String stashSaveFailed = "<red>Failed to update the network stash.</red>";
     public String joinAnnouncement = "<yellow><user> joined <server></yellow>";
     public String leaveAnnouncement = "<yellow><user> left <server></yellow>";
+  }
+
+  public static final class NetworkStash {
+    public boolean enabled = true;
+    public int slots = 27;
+    public String timezone = "America/New_York";
   }
 
   public static final class ServerManagerCompatibility {
@@ -121,6 +136,13 @@ public final class ProxyConfig {
       if (config.essentialsUserdataPath == null || config.essentialsUserdataPath.isBlank()) {
         config.essentialsUserdataPath = "plugins/Essentials/userdata";
       }
+      if (config.networkStash == null) {
+        config.networkStash = new NetworkStash();
+      }
+      config.networkStash.slots = normalizeStashSlots(config.networkStash.slots);
+      if (config.networkStash.timezone == null || config.networkStash.timezone.isBlank()) {
+        config.networkStash.timezone = "America/New_York";
+      }
       if (config.homesPerPage <= 0) {
         config.homesPerPage = 8;
       }
@@ -143,6 +165,10 @@ public final class ProxyConfig {
         privateMessages: true
         teleports: true
         homes: true
+        networkStash:
+          enabled: true
+          slots: 27
+          timezone: "America/New_York"
         essentialsUserdataPath: "plugins/Essentials/userdata"
         homesPerPage: 8
         teleportRequestTimeoutSeconds: 120
@@ -220,8 +246,21 @@ public final class ProxyConfig {
           failedDispatchTeleport: "<red>Failed to dispatch the teleport to the backend.</red>"
           failedConnectToServer: "<red>Failed to connect to <server>.</red>"
           crossServerActionTimedOut: "<red>Timed out waiting to finish the cross-server action.</red>"
+          stashDisabled: "<red>The network stash is disabled.</red>"
+          stashSessionExpired: "<red>Your network stash session expired. Reopen /stash.</red>"
+          stashDepositUsed: "<yellow>You have already deposited a stack into the network stash today.</yellow>"
+          stashWithdrawUsed: "<yellow>You have already withdrawn a stack from the network stash today.</yellow>"
+          stashFull: "<red>The network stash is full right now.</red>"
+          stashEmptySlot: "<red>That stash slot is empty.</red>"
+          stashInvalidAction: "<red>That stash action was invalid.</red>"
+          stashSaveFailed: "<red>Failed to update the network stash.</red>"
           joinAnnouncement: "<yellow><user> joined <server></yellow>"
           leaveAnnouncement: "<yellow><user> left <server></yellow>"
         """;
+  }
+
+  private static int normalizeStashSlots(int slots) {
+    int normalized = Math.max(9, Math.min(45, slots));
+    return normalized - (normalized % 9);
   }
 }

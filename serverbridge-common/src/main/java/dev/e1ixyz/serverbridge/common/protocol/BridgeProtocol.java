@@ -79,4 +79,31 @@ public final class BridgeProtocol {
   public static String readNullableString(DataInput in) throws IOException {
     return in.readBoolean() ? readString(in) : null;
   }
+
+  public static void writeByteArray(DataOutput out, byte[] value) throws IOException {
+    Objects.requireNonNull(value, "value");
+    out.writeInt(value.length);
+    out.write(value);
+  }
+
+  public static byte[] readByteArray(DataInput in) throws IOException {
+    int length = in.readInt();
+    if (length < 0) {
+      throw new IOException("Negative byte array length: " + length);
+    }
+    byte[] bytes = new byte[length];
+    in.readFully(bytes);
+    return bytes;
+  }
+
+  public static void writeNullableByteArray(DataOutput out, byte[] value) throws IOException {
+    out.writeBoolean(value != null);
+    if (value != null) {
+      writeByteArray(out, value);
+    }
+  }
+
+  public static byte[] readNullableByteArray(DataInput in) throws IOException {
+    return in.readBoolean() ? readByteArray(in) : null;
+  }
 }

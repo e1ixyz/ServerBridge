@@ -16,6 +16,7 @@ The current implementation is built around your existing `ServerManager` plugin 
 - Broadcasts proxy-wide join/leave announcements from the proxy while letting a backend Paper permission decide whether a player should participate.
 - Reads a player's existing EssentialsX homes from each managed backend and exposes them as one network-wide home list.
 - Adds paginated network home lists with clickable previous/next buttons for players with many homes.
+- Adds a shared network stash command with proxy-owned contents and once-per-day deposit/withdraw limits per player.
 - For a home on another server, sends the player to that backend first and then runs the normal EssentialsX `/home <name>` command on that backend.
 - Uses `ServerManager`'s managed server list to find backend working directories and Essentials userdata files.
 
@@ -42,6 +43,7 @@ There are two plugins:
   - PM/reply routing
   - global chat fanout
   - Essentials home lookup across managed servers
+  - the shared network stash contents and daily usage tracking
 
 - `serverbridge-paper`
   Runs on every Paper backend.
@@ -181,6 +183,13 @@ The bridge currently intercepts these EssentialsX command families and their ali
 - `homes`
 - `ehomes`
 
+### Network stash
+
+- `stash`
+- `networkstash`
+- `networkec`
+- `nec`
+
 ## Current Teleport Semantics
 
 - `tpa` and `tpahere` work across servers.
@@ -215,6 +224,20 @@ For large home lists:
 - the proxy output includes clickable previous/next controls
 - `/homes someHome` still behaves like the EssentialsX home alias and targets that specific home instead of a page
 
+## Network Stash
+
+`/stash` opens a shared stash for the whole proxy network. It is separate from EssentialsX `/ec` and does not replace local ender chests.
+
+Behavior:
+
+- the stash inventory is shared by every player on the proxy
+- each player can deposit one stack per real calendar day
+- each player can withdraw one stack per real calendar day
+- the proxy is authoritative for the stash contents and the daily limits
+- Paper only renders the GUI and serializes/deserializes the item payloads
+
+Items are transferred with Paper's raw `ItemStack.serializeAsBytes()` format, so current 1.21.11 item components are preserved for modern items such as enchanted weapons, trimmed gear, written books, and other custom metadata-bearing stacks.
+
 ## Configuration
 
 Proxy config is written to `plugins/serverbridgeproxy/config.yml`.
@@ -225,6 +248,10 @@ globalChat: true
 privateMessages: true
 teleports: true
 homes: true
+networkStash:
+  enabled: true
+  slots: 27
+  timezone: "America/New_York"
 essentialsUserdataPath: "plugins/Essentials/userdata"
 homesPerPage: 8
 teleportRequestTimeoutSeconds: 120
@@ -236,24 +263,35 @@ messages:
   playerNotFound: "<red>Player not found: <target></red>"
   teleportRequestSent: "<green>Teleport request sent to <target>.</green>"
   homeSendingToServer: "<green>Sending you to <server> for /home <home>...</green>"
+  stashDisabled: "<red>The network stash is disabled.</red>"
+  stashDepositUsed: "<yellow>You have already deposited a stack into the network stash today.</yellow>"
+  stashWithdrawUsed: "<yellow>You have already withdrawn a stack from the network stash today.</yellow>"
   joinAnnouncement: "<yellow><user> joined <server></yellow>"
   leaveAnnouncement: "<yellow><user> left <server></yellow>"
 ```
 
 - `prefix` is prepended to ServerBridge-generated proxy messages. Set it to `""` to disable it.
 - `globalChat`, `privateMessages`, `teleports`, `homes` toggle the network bridge features.
+- `networkStash.enabled` toggles the shared `/stash` feature.
+- `networkStash.slots` controls the stash size. Use a multiple of `9` from `9` to `45`.
+- `networkStash.timezone` is the authoritative timezone used to decide when the deposit/withdraw day resets.
 - `essentialsUserdataPath` is resolved inside each managed backend working directory exposed by `ServerManager`.
 - `homesPerPage` controls how many homes appear on each page of the network home list.
 - `teleportRequestTimeoutSeconds` controls network teleport request expiry.
 - `serverManagerCompatibility.enabled` tells the proxy plugin to prefer the explicit ServerManager API.
 - `serverManagerCompatibility.requireEnabledFlag` means the proxy only uses that API when `ServerManager` also has `compatibility.serverBridge.enabled: true`.
-- `messages.*` contains the proxy-side in-game text for PM flows, `/msgtoggle`, `/ignore`, teleport flows, paginated home flows, connection failures, and timeout notices.
+- `messages.*` contains the proxy-side in-game text for PM flows, `/msgtoggle`, `/ignore`, teleport flows, paginated home flows, stash limits/errors, connection failures, and timeout notices.
 
 The proxy also writes:
 
 - `plugins/serverbridgeproxy/social-preferences.yml`
+- `plugins/serverbridgeproxy/network-stash.yml`
 
-That file stores persistent network-wide `/msgtoggle` and `/ignore` preferences.
+Those files store:
+
+- persistent network-wide `/msgtoggle` and `/ignore` preferences
+- the shared stash contents
+- per-player daily stash deposit/withdraw usage
 
 Paper config is written to `plugins/ServerBridgePaper/config.yml`.
 
@@ -263,15 +301,22 @@ networkPlayerCompletions: true
 joinLeaveAnnouncements:
   enabled: true
   suppressLocalMessages: true
+stash:
+  title: "<dark_aqua>Network Stash</dark_aqua>"
+  summaryName: "<aqua>Shared Proxy Stash</aqua>"
 messages:
   usagePlayerMessage: "<red>Usage: /<command> <player> <message></red>"
   usageReplyMessage: "<red>Usage: /<command> <message></red>"
   usagePlayerTarget: "<red>Usage: /<command> <player></red>"
   usageHomesPage: "<red>Usage: /<command> [page <number>]</red>"
+  usageStash: "<red>Usage: /<command></red>"
   bridgeRequestFailed: "<red>Failed to send bridge request: <reason></red>"
+  stashNoDepositItem: "<red>Place one stack in the deposit slot first.</red>"
+  stashNoWithdrawSpace: "<red>Clear inventory space before withdrawing that stack.</red>"
 ```
 
 - The Paper config covers local backend-side ServerBridge messages such as command usage errors and bridge send failures.
+- The `stash.*` section controls the `/stash` GUI title, summary item, and control-item text shown on Paper.
 - `networkPlayerCompletions` enables cross-server player suggestions for target-player command arguments, including `/ignore` and `/unignore`.
 - Proxy-wide join/leave announcements are on by default for everyone when `joinLeaveAnnouncements.enabled` is true.
 - Silent join/leave behavior is based directly on EssentialsX backend permissions, not a ServerBridge permission:
@@ -352,6 +397,10 @@ globalChat: true
 privateMessages: true
 teleports: true
 homes: true
+networkStash:
+  enabled: true
+  slots: 27
+  timezone: "America/New_York"
 essentialsUserdataPath: "plugins/Essentials/userdata"
 homesPerPage: 8
 teleportRequestTimeoutSeconds: 120
@@ -371,11 +420,13 @@ Its `prefix` and `messages.*` entries control Paper-side usage/error messages be
 - `networkPlayerCompletions`
 - `joinLeaveAnnouncements.enabled`
 - `joinLeaveAnnouncements.suppressLocalMessages`
+- `stash.*`
 
 ## Notes
 
 - Global chat forwards the rendered chat component from the source server, so remote players see the same formatting that LPC produced on the source backend.
 - Target-player command completions on Paper are built from a proxy-fed network player snapshot, so players on other backends appear in suggestions for commands like `/msg`, `/tpa`, and `/ignore`.
 - Proxy join/leave announcements are emitted for everyone by default, except players who currently have the configured backend silent permission for that event.
+- `/stash` is intentionally separate from EssentialsX `/ec`; it is a shared proxy stash, not a replacement for local ender chests.
 - The bridge relies on plugin messaging, so the Paper plugin talks to the proxy through connected players.
 - The bridge is intended for a network where players are typically already on one SMP and may target another SMP that is offline; `ServerManager` is expected to do the actual backend boot and eventual player send.
