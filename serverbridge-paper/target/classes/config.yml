@@ -4,6 +4,7 @@ joinLeaveAnnouncements:
   enabled: true
   suppressLocalMessages: true
 stash:
+  enabled: true
   title: "<dark_aqua>Network Stash</dark_aqua>"
   depositInputName: "<yellow>Deposit Slot</yellow>"
   depositInputLore:
@@ -39,6 +40,7 @@ messages:
   usageHomesPage: "<red>Usage: /<command> [page <number>]</red>"
   usageStash: "<red>Usage: /<command></red>"
   bridgeRequestFailed: "<red>Failed to send bridge request: <reason></red>"
+  stashDisabled: "<red>The network stash is disabled on this server.</red>"
   stashNoDepositItem: "<red>Place one stack in the deposit slot first.</red>"
   stashNoWithdrawSpace: "<red>Clear inventory space before withdrawing that stack.</red>"
   stashActionPending: "<yellow>Please wait for the previous stash action to finish.</yellow>"

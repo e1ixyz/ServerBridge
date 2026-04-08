@@ -52,6 +52,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   private static final String DEFAULT_USAGE_HOMES_PAGE = "<red>Usage: /<command> [page <number>]</red>";
   private static final String DEFAULT_USAGE_STASH = "<red>Usage: /<command></red>";
   private static final String DEFAULT_BRIDGE_REQUEST_FAILED = "<red>Failed to send bridge request: <reason></red>";
+  private static final String DEFAULT_STASH_DISABLED = "<red>The network stash is disabled on this server.</red>";
   private static final String DEFAULT_STASH_TITLE = "<dark_aqua>Network Stash</dark_aqua>";
   private static final String DEFAULT_STASH_NO_DEPOSIT_ITEM = "<red>Place one stack in the deposit slot first.</red>";
   private static final String DEFAULT_STASH_NO_WITHDRAW_SPACE = "<red>Clear inventory space before withdrawing that stack.</red>";
@@ -320,6 +321,11 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       }
 
       if (STASH_ALIASES.contains(invocation.baseCommand())) {
+        if (!stashEnabled()) {
+          player.sendMessage(localMessage("messages.stashDisabled", DEFAULT_STASH_DISABLED));
+          event.setCancelled(true);
+          return;
+        }
         if (invocation.args().length != 0) {
           player.sendMessage(localMessage("messages.usageStash", DEFAULT_USAGE_STASH, "command", invocation.label()));
           event.setCancelled(true);
@@ -965,6 +971,10 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
 
   private boolean networkPlayerCompletionsEnabled() {
     return getConfig().getBoolean("networkPlayerCompletions", true);
+  }
+
+  private boolean stashEnabled() {
+    return getConfig().getBoolean("stash.enabled", true);
   }
 
   private boolean joinLeaveAnnouncementsEnabled() {

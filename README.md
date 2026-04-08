@@ -302,6 +302,7 @@ joinLeaveAnnouncements:
   enabled: true
   suppressLocalMessages: true
 stash:
+  enabled: true
   title: "<dark_aqua>Network Stash</dark_aqua>"
   summaryName: "<aqua>Shared Proxy Stash</aqua>"
 messages:
@@ -311,11 +312,13 @@ messages:
   usageHomesPage: "<red>Usage: /<command> [page <number>]</red>"
   usageStash: "<red>Usage: /<command></red>"
   bridgeRequestFailed: "<red>Failed to send bridge request: <reason></red>"
+  stashDisabled: "<red>The network stash is disabled on this server.</red>"
   stashNoDepositItem: "<red>Place one stack in the deposit slot first.</red>"
   stashNoWithdrawSpace: "<red>Clear inventory space before withdrawing that stack.</red>"
 ```
 
 - The Paper config covers local backend-side ServerBridge messages such as command usage errors and bridge send failures.
+- `stash.enabled` lets you disable `/stash` on a specific backend while leaving it enabled on other servers.
 - The `stash.*` section controls the `/stash` GUI title, summary item, and control-item text shown on Paper.
 - `networkPlayerCompletions` enables cross-server player suggestions for target-player command arguments, including `/ignore` and `/unignore`.
 - Proxy-wide join/leave announcements are on by default for everyone when `joinLeaveAnnouncements.enabled` is true.
