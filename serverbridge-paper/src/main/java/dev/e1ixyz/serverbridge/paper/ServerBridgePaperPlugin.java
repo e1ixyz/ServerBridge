@@ -74,7 +74,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   private static final String DEFAULT_STASH_DEPOSIT_INPUT_NAME = "<gold>Place Stack Here</gold>";
   private static final List<String> DEFAULT_STASH_DEPOSIT_INPUT_LORE = List.of(
       "<gray>Click this slot while holding the stack",
-      "<gray>you want to add to the shared stash."
+      "<gray>you want to add to your network stash."
   );
   private static final String DEFAULT_STASH_DEPOSIT_GUIDE_NAME = "<yellow>Deposit Guide</yellow>";
   private static final List<String> DEFAULT_STASH_DEPOSIT_GUIDE_LORE = List.of(
@@ -102,7 +102,7 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
   private static final List<String> DEFAULT_STASH_WITHDRAW_USED_LORE = List.of(
       "<gray>You already withdrew one stack today."
   );
-  private static final String DEFAULT_STASH_SUMMARY_NAME = "<aqua>Shared Proxy Stash</aqua>";
+  private static final String DEFAULT_STASH_SUMMARY_NAME = "<aqua>Personal Network Stash</aqua>";
   private static final List<String> DEFAULT_STASH_SUMMARY_LORE = List.of(
       "<gray>Used slots: <used>/<total>",
       "<gray>Deposit today: <deposit_status>",

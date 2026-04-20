@@ -9,7 +9,7 @@ stash:
   depositInputName: "<gold>Place Stack Here</gold>"
   depositInputLore:
     - "<gray>Click this slot while holding the stack"
-    - "<gray>you want to add to the shared stash."
+    - "<gray>you want to add to your network stash."
   depositGuideName: "<yellow>Deposit Guide</yellow>"
   depositGuideLore:
     - "<gray>1. Put one stack in the slot on the left."
@@ -30,7 +30,7 @@ stash:
   withdrawUsedName: "<red>Withdraw Used</red>"
   withdrawUsedLore:
     - "<gray>You already withdrew one stack today."
-  summaryName: "<aqua>Shared Proxy Stash</aqua>"
+  summaryName: "<aqua>Personal Network Stash</aqua>"
   summaryLore:
     - "<gray>Used slots: <used>/<total>"
     - "<gray>Deposit today: <deposit_status>"

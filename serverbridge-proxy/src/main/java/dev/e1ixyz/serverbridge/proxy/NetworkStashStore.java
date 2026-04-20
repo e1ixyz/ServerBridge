@@ -26,7 +26,8 @@ public final class NetworkStashStore {
 
   private final Path path;
   private final Logger logger;
-  private final List<StoredItem> slots = new ArrayList<>();
+  private final ConcurrentMap<UUID, List<StoredItem>> slotsByPlayer = new ConcurrentHashMap<>();
+  private final List<StoredItem> legacyGlobalSlots = new ArrayList<>();
   private final ConcurrentMap<UUID, PlayerUsage> usageByPlayer = new ConcurrentHashMap<>();
   private final List<LogEntry> logs = new ArrayList<>();
 
@@ -40,7 +41,7 @@ public final class NetworkStashStore {
       if (path.getParent() != null) {
         Files.createDirectories(path.getParent());
       }
-      Files.writeString(path, "stash:\n  slots: {}\nplayers: {}\nlogs: []\n", StandardCharsets.UTF_8);
+      Files.writeString(path, "stashes: {}\nplayers: {}\nlogs: []\n", StandardCharsets.UTF_8);
       logger.info("Wrote default ServerBridge network stash store to {}", path.toAbsolutePath());
     }
 
@@ -50,18 +51,20 @@ public final class NetworkStashStore {
   }
 
   public synchronized StashSnapshot snapshot(UUID playerUuid, String playerName, ZoneId zoneId, int configuredSlotCount) {
-    int slotCount = ensureSlotCount(configuredSlotCount);
+    List<StoredItem> playerSlots = ensurePlayerSlotCount(playerUuid, configuredSlotCount);
+    int slotCount = playerSlots.size();
     LocalDate today = LocalDate.now(zoneId);
     PlayerUsage usage = usageByPlayer.get(playerUuid);
     if (usage != null && playerName != null && !playerName.isBlank()) {
       usage.lastKnownName = sanitizeName(playerName, playerUuid);
     }
-    return new StashSnapshot(copySlots(slotCount), canDeposit(usage, today), canWithdraw(usage, today));
+    return new StashSnapshot(copySlots(playerSlots, slotCount), canDeposit(usage, today), canWithdraw(usage, today));
   }
 
   public synchronized DepositResult deposit(UUID playerUuid, String playerName, ZoneId zoneId, int configuredSlotCount,
                                             byte[] itemBytes, String itemSummary) throws IOException {
-    int slotCount = ensureSlotCount(configuredSlotCount);
+    List<StoredItem> playerSlots = ensurePlayerSlotCount(playerUuid, configuredSlotCount);
+    int slotCount = playerSlots.size();
     if (itemBytes == null || itemBytes.length == 0) {
       return new DepositResult(StashActionStatus.INVALID_ITEM, snapshot(playerUuid, playerName, zoneId, slotCount));
     }
@@ -73,13 +76,13 @@ public final class NetworkStashStore {
       return new DepositResult(StashActionStatus.DEPOSIT_ALREADY_USED, snapshot(playerUuid, usage.lastKnownName, zoneId, slotCount));
     }
 
-    int emptySlot = findFirstEmptySlot(slotCount);
+    int emptySlot = findFirstEmptySlot(playerSlots, slotCount);
     if (emptySlot < 0) {
       return new DepositResult(StashActionStatus.STASH_FULL, snapshot(playerUuid, usage.lastKnownName, zoneId, slotCount));
     }
 
     String summary = sanitizeSummary(itemSummary);
-    slots.set(emptySlot, new StoredItem(copyBytes(itemBytes), summary));
+    playerSlots.set(emptySlot, new StoredItem(copyBytes(itemBytes), summary));
     usage.lastDepositDay = today;
     addLog(new LogEntry(System.currentTimeMillis(), playerUuid, usage.lastKnownName, LogAction.DEPOSIT, summary, playerUuid, usage.lastKnownName));
     pruneUsage(playerUuid, usage);
@@ -89,7 +92,8 @@ public final class NetworkStashStore {
 
   public synchronized WithdrawResult withdraw(UUID playerUuid, String playerName, ZoneId zoneId, int configuredSlotCount, int slot)
       throws IOException {
-    int slotCount = ensureSlotCount(configuredSlotCount);
+    List<StoredItem> playerSlots = ensurePlayerSlotCount(playerUuid, configuredSlotCount);
+    int slotCount = playerSlots.size();
     if (slot < 0 || slot >= slotCount) {
       return new WithdrawResult(StashActionStatus.INVALID_SLOT, null, snapshot(playerUuid, playerName, zoneId, slotCount));
     }
@@ -101,12 +105,12 @@ public final class NetworkStashStore {
       return new WithdrawResult(StashActionStatus.WITHDRAW_ALREADY_USED, null, snapshot(playerUuid, usage.lastKnownName, zoneId, slotCount));
     }
 
-    StoredItem storedItem = slots.get(slot);
+    StoredItem storedItem = playerSlots.get(slot);
     if (storedItem == null || storedItem.bytes() == null || storedItem.bytes().length == 0) {
       return new WithdrawResult(StashActionStatus.EMPTY_SLOT, null, snapshot(playerUuid, usage.lastKnownName, zoneId, slotCount));
     }
 
-    slots.set(slot, null);
+    playerSlots.set(slot, null);
     usage.lastWithdrawDay = today;
     addLog(new LogEntry(System.currentTimeMillis(), playerUuid, usage.lastKnownName, LogAction.WITHDRAW,
         sanitizeSummary(storedItem.summary()), playerUuid, usage.lastKnownName));
@@ -177,10 +181,12 @@ public final class NetworkStashStore {
   }
 
   private void load() throws IOException {
-    slots.clear();
+    slotsByPlayer.clear();
+    legacyGlobalSlots.clear();
     usageByPlayer.clear();
     logs.clear();
     Yaml yaml = new Yaml();
+    boolean shouldRewriteLegacyGlobalStash = false;
     try (InputStream input = Files.newInputStream(path)) {
       Object rootObject = yaml.load(input);
       if (!(rootObject instanceof Map<?, ?> root)) {
@@ -191,8 +197,26 @@ public final class NetworkStashStore {
       if (stashObject instanceof Map<?, ?> stash) {
         Object slotsObject = stash.get("slots");
         if (slotsObject instanceof Map<?, ?> slotMap) {
-          loadSlots(slotMap);
+          legacyGlobalSlots.addAll(loadSlotList(slotMap));
+          if (!legacyGlobalSlots.isEmpty()) {
+            logger.warn("Loaded legacy global network stash data from {}. It is preserved under legacyGlobalStash and is no longer exposed to players.", path.toAbsolutePath());
+            shouldRewriteLegacyGlobalStash = true;
+          }
         }
+      }
+
+      Object legacyGlobalObject = root.get("legacyGlobalStash");
+      if (legacyGlobalObject instanceof Map<?, ?> legacyGlobal) {
+        Object slotsObject = legacyGlobal.get("slots");
+        if (slotsObject instanceof Map<?, ?> slotMap) {
+          legacyGlobalSlots.clear();
+          legacyGlobalSlots.addAll(loadSlotList(slotMap));
+        }
+      }
+
+      Object stashesObject = root.get("stashes");
+      if (stashesObject instanceof Map<?, ?> stashes) {
+        loadPlayerStashes(stashes);
       }
 
       Object playersObject = root.get("players");
@@ -205,9 +229,30 @@ public final class NetworkStashStore {
         loadLogs(logEntries);
       }
     }
+
+    if (shouldRewriteLegacyGlobalStash) {
+      save();
+    }
   }
 
-  private void loadSlots(Map<?, ?> slotMap) {
+  private void loadPlayerStashes(Map<?, ?> stashes) {
+    for (Map.Entry<?, ?> entry : stashes.entrySet()) {
+      UUID playerUuid = parseUuid(entry.getKey());
+      if (playerUuid == null || !(entry.getValue() instanceof Map<?, ?> values)) {
+        continue;
+      }
+
+      Object slotsObject = values.get("slots");
+      if (slotsObject instanceof Map<?, ?> slotMap) {
+        List<StoredItem> playerSlots = loadSlotList(slotMap);
+        if (hasStoredItems(playerSlots)) {
+          slotsByPlayer.put(playerUuid, playerSlots);
+        }
+      }
+    }
+  }
+
+  private List<StoredItem> loadSlotList(Map<?, ?> slotMap) {
     int highestSlot = -1;
     Map<Integer, StoredItem> loaded = new LinkedHashMap<>();
     for (Map.Entry<?, ?> entry : slotMap.entrySet()) {
@@ -223,10 +268,12 @@ public final class NetworkStashStore {
       highestSlot = Math.max(highestSlot, slot);
     }
 
+    List<StoredItem> loadedSlots = new ArrayList<>();
     for (int index = 0; index <= highestSlot; index++) {
       StoredItem stored = loaded.get(index);
-      slots.add(stored == null ? null : stored.copy());
+      loadedSlots.add(stored == null ? null : stored.copy());
     }
+    return loadedSlots;
   }
 
   private void loadPlayers(Map<?, ?> players) {
@@ -269,21 +316,25 @@ public final class NetworkStashStore {
   private synchronized void save() throws IOException {
     Map<String, Object> root = new LinkedHashMap<>();
 
-    Map<String, Object> stash = new LinkedHashMap<>();
-    Map<String, Object> slotMap = new LinkedHashMap<>();
-    for (int slot = 0; slot < slots.size(); slot++) {
-      StoredItem item = slots.get(slot);
-      if (item != null && item.bytes() != null && item.bytes().length > 0) {
-        Map<String, Object> stored = new LinkedHashMap<>();
-        stored.put("data", Base64.getEncoder().encodeToString(item.bytes()));
-        if (item.summary() != null && !item.summary().isBlank()) {
-          stored.put("summary", item.summary());
-        }
-        slotMap.put(Integer.toString(slot), stored);
+    Map<String, Object> stashes = new LinkedHashMap<>();
+    List<Map.Entry<UUID, List<StoredItem>>> stashEntries = new ArrayList<>(slotsByPlayer.entrySet());
+    stashEntries.sort(Map.Entry.comparingByKey(Comparator.comparing(UUID::toString)));
+    for (Map.Entry<UUID, List<StoredItem>> entry : stashEntries) {
+      if (!hasStoredItems(entry.getValue())) {
+        continue;
       }
+
+      Map<String, Object> playerStash = new LinkedHashMap<>();
+      playerStash.put("slots", serializeSlots(entry.getValue()));
+      stashes.put(entry.getKey().toString(), playerStash);
     }
-    stash.put("slots", slotMap);
-    root.put("stash", stash);
+    root.put("stashes", stashes);
+
+    if (hasStoredItems(legacyGlobalSlots)) {
+      Map<String, Object> legacyGlobalStash = new LinkedHashMap<>();
+      legacyGlobalStash.put("slots", serializeSlots(legacyGlobalSlots));
+      root.put("legacyGlobalStash", legacyGlobalStash);
+    }
 
     Map<String, Object> players = new LinkedHashMap<>();
     List<Map.Entry<UUID, PlayerUsage>> usageEntries = new ArrayList<>(usageByPlayer.entrySet());
@@ -333,15 +384,41 @@ public final class NetworkStashStore {
     Files.writeString(path, new Yaml().dump(root), StandardCharsets.UTF_8);
   }
 
-  private int ensureSlotCount(int configuredSlotCount) {
+  private List<StoredItem> ensurePlayerSlotCount(UUID playerUuid, int configuredSlotCount) {
     int normalized = Math.max(9, configuredSlotCount);
+    List<StoredItem> slots = slotsByPlayer.computeIfAbsent(playerUuid, ignored -> new ArrayList<>());
     while (slots.size() < normalized) {
       slots.add(null);
     }
-    return slots.size();
+    return slots;
   }
 
-  private List<byte[]> copySlots(int slotCount) {
+  private Map<String, Object> serializeSlots(List<StoredItem> slots) {
+    Map<String, Object> slotMap = new LinkedHashMap<>();
+    for (int slot = 0; slot < slots.size(); slot++) {
+      StoredItem item = slots.get(slot);
+      if (item != null && item.bytes() != null && item.bytes().length > 0) {
+        Map<String, Object> stored = new LinkedHashMap<>();
+        stored.put("data", Base64.getEncoder().encodeToString(item.bytes()));
+        if (item.summary() != null && !item.summary().isBlank()) {
+          stored.put("summary", item.summary());
+        }
+        slotMap.put(Integer.toString(slot), stored);
+      }
+    }
+    return slotMap;
+  }
+
+  private boolean hasStoredItems(List<StoredItem> slots) {
+    for (StoredItem item : slots) {
+      if (item != null && item.bytes() != null && item.bytes().length > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private List<byte[]> copySlots(List<StoredItem> slots, int slotCount) {
     List<byte[]> snapshot = new ArrayList<>(slotCount);
     for (int index = 0; index < slotCount; index++) {
       StoredItem item = slots.get(index);
@@ -350,7 +427,7 @@ public final class NetworkStashStore {
     return snapshot;
   }
 
-  private int findFirstEmptySlot(int slotCount) {
+  private int findFirstEmptySlot(List<StoredItem> slots, int slotCount) {
     for (int slot = 0; slot < slotCount; slot++) {
       StoredItem item = slots.get(slot);
       if (item == null || item.bytes() == null || item.bytes().length == 0) {
