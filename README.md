@@ -371,6 +371,19 @@ Notably out of scope right now:
 
 Those commands need more state than this first bridge has today, especially when one SMP is offline.
 
+## Compatibility
+
+- **Velocity API 3.4.0** — the latest stable release. (3.5.0 is a snapshot and 4.0.0 is in development; there is no 5.0.0.) A 3.4.0-API plugin runs fine on a 3.5.0-snapshot proxy.
+- **Paper API 1.21.11**, `api-version: "1.21"` — works on Paper 1.21.x.
+- Compiled for **Java 17**; runs on Java 17+ (the production network uses Java 21/25).
+
+## Recent Fixes
+
+- Fixed a thread-safety bug where concurrent `/home` lookups shared a single non-thread-safe SnakeYAML parser.
+- Fixed a command-passthrough token leak that could cause the next manually typed `/home`-style command to be skipped.
+- Hardened proxy config loading: a malformed `config.yml` is now backed up and replaced with defaults instead of disabling the plugin.
+- Capped declared lengths in the bridge protocol to guard against oversized payload allocations.
+
 ## Building
 
 From this project root:

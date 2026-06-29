@@ -31,7 +31,6 @@ public final class HomeService {
   private final ProxyConfig config;
   private final ServerManagerAccessor serverManagerAccessor;
   private final Logger logger;
-  private final Yaml yaml = new Yaml();
 
   public HomeService(ProxyConfig config, ServerManagerAccessor serverManagerAccessor, Logger logger) {
     this.config = config;
@@ -121,8 +120,10 @@ public final class HomeService {
   }
 
   private List<HomeEntry> readHomes(String server, Path userFile) {
+    // SnakeYAML's Yaml is not thread-safe; /home lookups run concurrently, so use a
+    // fresh instance per read instead of a shared field.
     try (InputStream input = Files.newInputStream(userFile)) {
-      Object loaded = yaml.load(input);
+      Object loaded = new Yaml().load(input);
       if (!(loaded instanceof Map<?, ?> root)) {
         return List.of();
       }

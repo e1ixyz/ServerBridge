@@ -1,5 +1,7 @@
 dev/e1ixyz/serverbridge/paper/ServerBridgePaperPlugin$TabCompletionContext.class
 dev/e1ixyz/serverbridge/paper/ServerBridgePaperPlugin$CommandInvocation.class
+dev/e1ixyz/serverbridge/paper/ServerBridgePaperPlugin$StashInventoryHolder.class
 dev/e1ixyz/serverbridge/paper/ServerBridgePaperPlugin$1.class
+dev/e1ixyz/serverbridge/paper/ServerBridgePaperPlugin$StashView.class
 dev/e1ixyz/serverbridge/paper/ServerBridgePaperPlugin.class
 dev/e1ixyz/serverbridge/paper/ServerBridgePaperPlugin$NetworkPlayer.class

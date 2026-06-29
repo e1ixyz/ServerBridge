@@ -620,8 +620,14 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       return;
     }
 
-    passthroughOnce.put(playerUuid, baseCommand(command));
+    String token = baseCommand(command);
+    passthroughOnce.put(playerUuid, token);
     player.performCommand(command);
+    // performCommand dispatches directly and does not fire PlayerCommandPreprocessEvent
+    // on standard Paper, so the bypass token would otherwise leak and cause the player's
+    // next manual command to be wrongly skipped. Clear it now; if the event did fire it
+    // was already consumed during the synchronous call above and this is a no-op.
+    passthroughOnce.remove(playerUuid, token);
   }
 
   private void runTeleport(UUID movingPlayerUuid, UUID targetPlayerUuid, int attempt) {

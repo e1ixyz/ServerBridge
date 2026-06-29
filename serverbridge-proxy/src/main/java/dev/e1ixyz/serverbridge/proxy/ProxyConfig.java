@@ -8,6 +8,8 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 public final class ProxyConfig {
   public String prefix = "<dark_aqua>[ServerBridge] </dark_aqua>";
@@ -138,9 +140,26 @@ public final class ProxyConfig {
       logger.info("Wrote default ServerBridge proxy config to {}", path.toAbsolutePath());
     }
 
-    Yaml yaml = new Yaml();
+    ProxyConfig config;
     try (InputStream input = Files.newInputStream(path)) {
-      ProxyConfig config = yaml.loadAs(input, ProxyConfig.class);
+      config = new Yaml().loadAs(input, ProxyConfig.class);
+    } catch (Exception ex) {
+      // A malformed/incompatible config must not disable the whole plugin. Back it
+      // up and fall back to defaults so the proxy still initializes.
+      Path backup = path.resolveSibling(path.getFileName() + ".broken-"
+          + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")));
+      try {
+        Files.move(path, backup);
+        Files.writeString(path, defaultYaml(), StandardCharsets.UTF_8);
+      } catch (IOException ioEx) {
+        logger.error("Failed to back up unreadable ServerBridge proxy config at {}", path.toAbsolutePath(), ioEx);
+      }
+      logger.error("Could not parse ServerBridge proxy config at {}; backed it up to {} and reverted to defaults.",
+          path.toAbsolutePath(), backup.toAbsolutePath(), ex);
+      config = new ProxyConfig();
+    }
+
+    {
       if (config == null) {
         config = new ProxyConfig();
       }

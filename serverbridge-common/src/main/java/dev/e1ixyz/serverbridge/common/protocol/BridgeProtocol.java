@@ -13,6 +13,9 @@ import java.util.UUID;
 
 public final class BridgeProtocol {
   public static final String CHANNEL = "serverbridge:main";
+  // Plugin messages are already size-capped by the platform; reject absurd declared
+  // lengths so a malformed/hostile payload can't trigger a huge pre-read allocation.
+  private static final int MAX_ARRAY_LENGTH = 8 * 1024 * 1024;
 
   private BridgeProtocol() {
   }
@@ -60,12 +63,7 @@ public final class BridgeProtocol {
   }
 
   public static String readString(DataInput in) throws IOException {
-    int length = in.readInt();
-    if (length < 0) {
-      throw new IOException("Negative string length: " + length);
-    }
-    byte[] bytes = new byte[length];
-    in.readFully(bytes);
+    byte[] bytes = readByteArray(in);
     return new String(bytes, StandardCharsets.UTF_8);
   }
 
@@ -90,6 +88,9 @@ public final class BridgeProtocol {
     int length = in.readInt();
     if (length < 0) {
       throw new IOException("Negative byte array length: " + length);
+    }
+    if (length > MAX_ARRAY_LENGTH) {
+      throw new IOException("Byte array length exceeds maximum (" + length + " > " + MAX_ARRAY_LENGTH + ")");
     }
     byte[] bytes = new byte[length];
     in.readFully(bytes);
