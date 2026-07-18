@@ -198,7 +198,18 @@ public final class SocialPreferencesStore {
     }
 
     root.put("players", players);
-    Files.writeString(path, new Yaml().dump(root), StandardCharsets.UTF_8);
+    writeAtomically(new Yaml().dump(root));
+  }
+
+  private void writeAtomically(String content) throws IOException {
+    // temp-file + atomic rename so a crash mid-write can't truncate the preferences file.
+    Path tmp = path.resolveSibling(path.getFileName().toString() + ".tmp");
+    Files.writeString(tmp, content, StandardCharsets.UTF_8);
+    try {
+      Files.move(tmp, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+    } catch (java.nio.file.AtomicMoveNotSupportedException ex) {
+      Files.move(tmp, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+    }
   }
 
   private void prune(UUID playerUuid, PlayerPreferences preferences) {

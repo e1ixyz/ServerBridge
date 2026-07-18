@@ -201,6 +201,10 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       event.quitMessage(null);
     }
     StashView view = stashViews.get(event.getPlayer().getUniqueId());
+    // ponytail: when a stash op is in flight (awaitingResponse) at quit, the pending deposit item is
+    // intentionally NOT returned — returning it would dupe whenever the proxy actually committed.
+    // The rare loss (proxy rejects/lags while the player is offline) can only be fully closed with a
+    // deposit-commit / withdraw-delivery ack + idempotent redelivery protocol. Upgrade path if needed.
     cleanupStashView(event.getPlayer(), true, view != null && !view.awaitingResponse());
   }
 
@@ -411,7 +415,11 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
       return;
     }
     if (rawSlot >= view.inventory().getSize()) {
-      if (event.isShiftClick()) {
+      // Clicks in the player's own inventory are allowed EXCEPT actions that reach into the
+      // top (stash) inventory: shift-click (MOVE_TO_OTHER_INVENTORY) and double-click
+      // (COLLECT_TO_CURSOR) both pull the real displayed stash stacks with no STASH_WITHDRAW,
+      // which is an item dupe. Cancel those.
+      if (event.isShiftClick() || event.getAction() == InventoryAction.COLLECT_TO_CURSOR) {
         event.setCancelled(true);
       }
       return;
@@ -666,12 +674,16 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
     if (count < 0) {
       throw new IOException("Negative network player snapshot size: " + count);
     }
-    networkPlayers.clear();
+    // Parse fully into a temp map first; only swap in once the whole payload decoded cleanly, so a
+    // truncated snapshot (EOFException mid-loop) doesn't leave completions empty/half-populated.
+    var parsed = new java.util.HashMap<String, NetworkPlayer>();
     for (int index = 0; index < count; index++) {
       String username = BridgeProtocol.readString(decoded.in());
       String server = BridgeProtocol.readString(decoded.in());
-      networkPlayers.put(username.toLowerCase(Locale.ROOT), new NetworkPlayer(username, server));
+      parsed.put(username.toLowerCase(Locale.ROOT), new NetworkPlayer(username, server));
     }
+    networkPlayers.clear();
+    networkPlayers.putAll(parsed);
   }
 
   private void handleStashSync(Player sourcePlayer, BridgeProtocol.DecodedMessage decoded) throws IOException {
@@ -1279,8 +1291,14 @@ public final class ServerBridgePaperPlugin extends JavaPlugin implements Listene
         && "*".startsWith(loweredToken)) {
       suggestions.add("*");
     }
-    for (Player online : Bukkit.getOnlinePlayers()) {
-      addPlayerCompletion(suggestions, sender, online.getName(), loweredToken);
+    // getOnlinePlayers() is a live view; this runs on the async tab-complete thread, so a concurrent
+    // join/quit can throw CME. The network snapshot below already covers online players network-wide.
+    try {
+      for (Player online : Bukkit.getOnlinePlayers()) {
+        addPlayerCompletion(suggestions, sender, online.getName(), loweredToken);
+      }
+    } catch (java.util.ConcurrentModificationException ignored) {
+      // fall through; networkPlayers still supplies completions
     }
     for (NetworkPlayer networkPlayer : networkPlayers.values()) {
       addPlayerCompletion(suggestions, sender, networkPlayer.username(), loweredToken);

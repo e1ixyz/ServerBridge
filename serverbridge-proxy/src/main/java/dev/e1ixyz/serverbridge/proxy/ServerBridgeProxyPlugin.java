@@ -44,6 +44,8 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Plugin(
     id = "serverbridgeproxy",
@@ -72,8 +74,10 @@ public final class ServerBridgeProxyPlugin {
   private final ConcurrentMap<UUID, JoinLeaveState> joinLeaveStates = new ConcurrentHashMap<>();
   private final ConcurrentMap<UUID, String> knownServers = new ConcurrentHashMap<>();
   private final ConcurrentMap<UUID, UUID> stashSessions = new ConcurrentHashMap<>();
+  /** Coalesces bursts of snapshot requests (mass reconnect) into one broadcast per delay window. */
+  private final AtomicBoolean snapshotScheduled = new AtomicBoolean(false);
 
-  private ProxyConfig config;
+  private volatile ProxyConfig config;
   private HomeService homeService;
   private SocialPreferencesStore socialPreferencesStore;
   private NetworkStashStore networkStashStore;
@@ -325,14 +329,11 @@ public final class ServerBridgeProxyPlugin {
     }
 
     pruneExpiredRequests(target.getUniqueId());
-    ConcurrentMap<UUID, TeleportRequest> requests = requestsByTarget.computeIfAbsent(target.getUniqueId(), ignored -> new ConcurrentHashMap<>());
-    if (requests.containsKey(requester.getUniqueId())) {
+    TeleportRequest request = new TeleportRequest(requester.getUniqueId(), target.getUniqueId(), mode, System.currentTimeMillis());
+    if (!addTeleportRequest(request)) {
       message(requester, messages.teleportRequestAlreadyPending, "target", target.getUsername());
       return;
     }
-
-    TeleportRequest request = new TeleportRequest(requester.getUniqueId(), target.getUniqueId(), mode, System.currentTimeMillis());
-    requests.put(requester.getUniqueId(), request);
 
     if (mode == TeleportMode.TPA) {
       message(requester, messages.teleportRequestSent, "target", target.getUsername());
@@ -357,12 +358,10 @@ public final class ServerBridgeProxyPlugin {
         continue;
       }
       pruneExpiredRequests(target.getUniqueId());
-      ConcurrentMap<UUID, TeleportRequest> requests = requestsByTarget.computeIfAbsent(target.getUniqueId(), ignored -> new ConcurrentHashMap<>());
-      if (requests.containsKey(requester.getUniqueId())) {
+      TeleportRequest request = new TeleportRequest(requester.getUniqueId(), target.getUniqueId(), TeleportMode.TPA_HERE, System.currentTimeMillis());
+      if (!addTeleportRequest(request)) {
         continue;
       }
-      TeleportRequest request = new TeleportRequest(requester.getUniqueId(), target.getUniqueId(), TeleportMode.TPA_HERE, System.currentTimeMillis());
-      requests.put(requester.getUniqueId(), request);
       message(target, messages.teleportHereRequestReceived, "player", requester.getUsername());
       sent++;
     }
@@ -468,8 +467,11 @@ public final class ServerBridgeProxyPlugin {
       return;
     }
 
+    // A tpahere moves the responder away; tpa requests want the requesters to come TO the responder.
+    // Accepting both at once teleports the responder off while others chase a stale location, so any
+    // mix of a tpahere with another request is a conflict (as is more than one tpahere).
     long tpHereCount = activeRequests.stream().filter(request -> request.mode() == TeleportMode.TPA_HERE).count();
-    if (tpHereCount > 1) {
+    if (tpHereCount > 1 || (tpHereCount == 1 && activeRequests.size() > 1)) {
       message(responder, messages.multipleTeleportHereConflict);
       return;
     }
@@ -1120,9 +1122,15 @@ public final class ServerBridgeProxyPlugin {
   }
 
   private void scheduleNetworkPlayerSnapshot() {
-    proxy.getScheduler().buildTask(this, this::broadcastNetworkPlayerSnapshot)
-        .delay(NETWORK_PLAYER_SNAPSHOT_DELAY)
-        .schedule();
+    // Coalesce: if a snapshot is already pending, let it capture the latest state instead of
+    // scheduling a second full-network scan. Prevents an O(n^2) packet/CPU burst on mass reconnect.
+    if (!snapshotScheduled.compareAndSet(false, true)) {
+      return;
+    }
+    proxy.getScheduler().buildTask(this, () -> {
+      snapshotScheduled.set(false);
+      broadcastNetworkPlayerSnapshot();
+    }).delay(NETWORK_PLAYER_SNAPSHOT_DELAY).schedule();
   }
 
   private void broadcastNetworkPlayerSnapshot() {
@@ -1345,19 +1353,38 @@ public final class ServerBridgeProxyPlugin {
     }).delay(delay).schedule();
   }
 
+  /**
+   * Atomically add a request for its target. Returns false if the requester already has one pending.
+   * All mutations of a target's inner map go through {@link java.util.concurrent.ConcurrentHashMap#compute}
+   * so an add can never land in a map that a concurrent remove/prune has detached from requestsByTarget.
+   */
+  private boolean addTeleportRequest(TeleportRequest request) {
+    boolean[] added = {false};
+    requestsByTarget.compute(request.target(), (key, existing) -> {
+      ConcurrentMap<UUID, TeleportRequest> map = (existing != null) ? existing : new ConcurrentHashMap<>();
+      if (map.containsKey(request.requester())) {
+        added[0] = false;
+      } else {
+        map.put(request.requester(), request);
+        added[0] = true;
+      }
+      return map;
+    });
+    return added[0];
+  }
+
   private void pruneExpiredRequests(UUID targetUuid) {
     if (config == null) {
       return;
     }
-    Map<UUID, TeleportRequest> requests = requestsByTarget.get(targetUuid);
-    if (requests == null || requests.isEmpty()) {
-      return;
-    }
     long oldestAllowed = System.currentTimeMillis() - Duration.ofSeconds(config.teleportRequestTimeoutSeconds).toMillis();
-    requests.values().removeIf(request -> request.createdAt() < oldestAllowed);
-    if (requests.isEmpty()) {
-      requestsByTarget.remove(targetUuid, requests);
-    }
+    requestsByTarget.compute(targetUuid, (key, existing) -> {
+      if (existing == null) {
+        return null;
+      }
+      existing.values().removeIf(request -> request.createdAt() < oldestAllowed);
+      return existing.isEmpty() ? null : existing;
+    });
   }
 
   private TeleportRequest findRequestForTarget(UUID targetUuid, String requesterName) {
@@ -1382,41 +1409,36 @@ public final class ServerBridgeProxyPlugin {
   }
 
   private void removeRequest(TeleportRequest request) {
-    Map<UUID, TeleportRequest> requests = requestsByTarget.get(request.target());
-    if (requests == null) {
-      return;
-    }
-    requests.remove(request.requester());
-    if (requests.isEmpty()) {
-      requestsByTarget.remove(request.target(), requests);
-    }
+    requestsByTarget.compute(request.target(), (key, existing) -> {
+      if (existing == null) {
+        return null;
+      }
+      existing.remove(request.requester());
+      return existing.isEmpty() ? null : existing;
+    });
   }
 
   private int cancelOutgoingRequests(Player requester, String targetName) {
-    int removed = 0;
+    int[] removed = {0};
     String loweredTargetName = targetName == null ? null : targetName.toLowerCase(java.util.Locale.ROOT);
-    for (Map.Entry<UUID, ConcurrentMap<UUID, TeleportRequest>> entry : requestsByTarget.entrySet()) {
-      UUID targetUuid = entry.getKey();
-      ConcurrentMap<UUID, TeleportRequest> requests = entry.getValue();
-      TeleportRequest request = requests.get(requester.getUniqueId());
-      if (request == null) {
-        continue;
-      }
-
+    for (UUID targetUuid : requestsByTarget.keySet()) {
       if (loweredTargetName != null && !loweredTargetName.isBlank()) {
         Player target = proxy.getPlayer(targetUuid).orElse(null);
         if (target == null || !target.getUsername().toLowerCase(java.util.Locale.ROOT).equals(loweredTargetName)) {
           continue;
         }
       }
-
-      requests.remove(requester.getUniqueId());
-      if (requests.isEmpty()) {
-        requestsByTarget.remove(targetUuid, requests);
-      }
-      removed++;
+      requestsByTarget.compute(targetUuid, (key, existing) -> {
+        if (existing == null) {
+          return null;
+        }
+        if (existing.remove(requester.getUniqueId()) != null) {
+          removed[0]++;
+        }
+        return existing.isEmpty() ? null : existing;
+      });
     }
-    return removed;
+    return removed[0];
   }
 
   private Player resolveOnlinePlayer(String username) {
@@ -1549,13 +1571,18 @@ public final class ServerBridgeProxyPlugin {
     TP_HERE
   }
 
-  private record PendingServerAction(String targetServer, UUID targetPlayer, String command) {
+  // The `sequence` gives every action a unique identity so ConcurrentHashMap.remove(key, value)
+  // (value-equality) can never remove a newer, value-equal action that replaced this one — the
+  // identity guards elsewhere (get(uuid) != action) and these value removals now agree.
+  private record PendingServerAction(long sequence, String targetServer, UUID targetPlayer, String command) {
+    private static final AtomicLong SEQUENCE = new AtomicLong();
+
     private static PendingServerAction teleport(String targetServer, UUID targetPlayer) {
-      return new PendingServerAction(targetServer, Objects.requireNonNull(targetPlayer, "targetPlayer"), null);
+      return new PendingServerAction(SEQUENCE.incrementAndGet(), targetServer, Objects.requireNonNull(targetPlayer, "targetPlayer"), null);
     }
 
     private static PendingServerAction command(String targetServer, String command) {
-      return new PendingServerAction(targetServer, null, Objects.requireNonNull(command, "command"));
+      return new PendingServerAction(SEQUENCE.incrementAndGet(), targetServer, null, Objects.requireNonNull(command, "command"));
     }
   }
 

@@ -121,7 +121,8 @@ public final class ProxyConfig {
   }
 
   public static final class NetworkStash {
-    public boolean enabled = true;
+    // volatile: /stashtoggle flips this on one plugin-message thread while /stash reads it on another.
+    public volatile boolean enabled = true;
     public int slots = 27;
     public String timezone = "America/New_York";
   }

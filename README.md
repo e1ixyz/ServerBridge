@@ -203,7 +203,7 @@ The bridge currently intercepts these EssentialsX command families and their ali
 - `tpaccept` and `tpdeny` support:
   - no argument: most recent request
   - player argument: specific requester
-  - `*`: deny-all works; accept-all works unless there are multiple pending `tpahere` requests for the same player, in which case the player is told to accept those individually.
+  - `*`: deny-all works; accept-all works only when there is at most one pending `tpahere` and it is not mixed with other requests. If there are multiple pending `tpahere` requests, or a `tpahere` is mixed with any other request, the player is told to accept those individually.
 - `tpaall` sends a `tpahere`-style request to every other online player on the network.
 - `tpacancel` cancels the requester's outstanding network teleport requests.
 - `tp` and `tphere` perform direct cross-server teleports without a request/accept flow.
@@ -383,6 +383,10 @@ Those commands need more state than this first bridge has today, especially when
 - Fixed a command-passthrough token leak that could cause the next manually typed `/home`-style command to be skipped.
 - Hardened proxy config loading: a malformed `config.yml` is now backed up and replaced with defaults instead of disabling the plugin.
 - Capped declared lengths in the bridge protocol to guard against oversized payload allocations.
+- Made teleport-request map mutations atomic (`ConcurrentHashMap.compute`) to close an add/prune race.
+- Wrote the network-stash and social-preferences files atomically (temp file + atomic rename) so a crash mid-write cannot truncate them.
+- Cancelled double-click (`COLLECT_TO_CURSOR`) in the stash GUI, closing an item-dupe path alongside shift-click.
+- Coalesced network-player snapshot broadcasts to avoid a packet/CPU burst on mass reconnect.
 
 ## Building
 

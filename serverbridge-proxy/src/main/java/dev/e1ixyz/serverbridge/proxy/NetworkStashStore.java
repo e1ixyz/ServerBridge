@@ -381,7 +381,19 @@ public final class NetworkStashStore {
     }
     root.put("logs", serializedLogs);
 
-    Files.writeString(path, new Yaml().dump(root), StandardCharsets.UTF_8);
+    writeAtomically(new Yaml().dump(root));
+  }
+
+  private void writeAtomically(String content) throws IOException {
+    // temp-file + atomic rename so a crash/disk-full mid-write can't truncate the real stash file
+    // (which would lose every player's stash). The old file survives until the rename succeeds.
+    Path tmp = path.resolveSibling(path.getFileName().toString() + ".tmp");
+    Files.writeString(tmp, content, StandardCharsets.UTF_8);
+    try {
+      Files.move(tmp, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+    } catch (java.nio.file.AtomicMoveNotSupportedException ex) {
+      Files.move(tmp, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+    }
   }
 
   private List<StoredItem> ensurePlayerSlotCount(UUID playerUuid, int configuredSlotCount) {
